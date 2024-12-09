@@ -53,14 +53,18 @@ impl MultiPattern {
         let old_status = self.cols[column].1;
         if append
             && old_status != Status::Rescore
-                // must be rescored if the atom is negative or if there is a
+                // must be rescored if the atom is negative or if there is an unescaped
                 // trailing `\`
             && self.cols[column].0.atoms.last().map_or(true, |last| {
                 !last.negative
                     && last
                         .needle_text()
                         .chars()
-                        .next_back() != Some('\\')
+                        .rev()
+                        .take_while(|c| *c == '\\')
+                        .count()
+                        % 2
+                        == 0
             })
         {
             self.cols[column].1 = Status::Update;

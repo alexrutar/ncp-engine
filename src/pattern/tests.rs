@@ -17,6 +17,14 @@ fn append() {
     assert_eq!(pat.status(), Status::Update);
     pat.reparse(
         0,
+        "a\\\\\\",
+        CaseMatching::Smart,
+        Normalization::Smart,
+        true,
+    );
+    assert_eq!(pat.status(), Status::Update);
+    pat.reparse(
+        0,
         "a\\\\\\\\",
         CaseMatching::Smart,
         Normalization::Smart,
