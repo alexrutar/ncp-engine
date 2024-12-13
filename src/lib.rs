@@ -74,16 +74,32 @@ impl<T> Clone for Injector<T> {
 }
 
 impl<T> Injector<T> {
-    /// Append an element to the list of matched items.
+    /// Appends an element to the list of match candidates.
     ///
-    /// This function is lock-free and wait-free.
+    /// This function is lock-free and wait-free. The returned `u32` is the internal index which
+    /// has been assigned to the provided value and is guaranteed to be valid unless
+    /// [`Nucleo::restart`] has been called.
+    ///
+    /// The `fill_columns` closure is called to generate the representation of the pushed value
+    /// within the matcher engine. The first argument is a reference to the provided value, and the
+    /// second argument is a slice where each entry corresponds to a column within the [`Nucleo`]
+    /// instance from which this `Injector` was created.
+    ///
+    /// ## Example
+    /// If the matcher has exactly one column and the item type `T` is a `String`, an appropriate
+    /// `fill_columns` closure might look like
+    /// ```
+    /// # use nucleo::Utf32String;
+    /// let fill_columns = |s: &String, cols: &mut [Utf32String]| {
+    ///      cols[0] = (&**s).into();
+    /// };
+    /// ```
     pub fn push(&self, value: T, fill_columns: impl FnOnce(&T, &mut [Utf32String])) -> u32 {
         let idx = self.items.push(value, fill_columns);
         (self.notify)();
         idx
     }
 
-<<<<<<< HEAD
     /// Appends multiple elements to the list of matched items.
     /// This function is lock-free and wait-free.
     ///
@@ -149,7 +165,7 @@ pub struct Status {
     pub running: bool,
 }
 
-/// A represention of the results of a [`Nucleo`] worker after finishing a
+/// A representation of the results of a [`Nucleo`] worker after finishing a
 /// [`tick`](Nucleo::tick).
 pub struct Snapshot<T: Sync + Send + 'static> {
     item_count: u32,
@@ -239,7 +255,7 @@ impl<T: Sync + Send + 'static> Snapshot<T> {
         self.items.get(index)
     }
 
-    /// Return the matches corresponding to this snapshot.
+    /// Returns the matches corresponding to this snapshot.
     #[inline]
     pub fn matches(&self) -> &[Match] {
         &self.matches
@@ -286,6 +302,35 @@ impl State {
 
 /// A high level matcher worker that quickly computes matches in a background
 /// threadpool.
+///
+/// ## Example
+/// ```
+/// use std::sync::atomic::{AtomicBool, Ordering};
+/// use std::sync::Arc;
+/// use std::thread;
+///
+/// use nucleo::{Config, Nucleo};
+///
+/// static NEEDS_UPDATE: AtomicBool = AtomicBool::new(false);
+///
+/// // initialize a new matcher with default configuration and one column
+/// let matcher = Nucleo::new(
+///     Config::DEFAULT,
+///     Arc::new(|| NEEDS_UPDATE.store(true, Ordering::Relaxed)),
+///     None,
+///     1
+/// );
+///
+/// // get a handle to add items to the matcher
+/// let injector = matcher.injector();
+///
+/// // add items to the matcher
+/// thread::spawn(move || {
+///     injector.push("Hello, world!".to_string(), |s, cols| {
+///         cols[0] = (&**s).into();
+///     });
+/// });
+/// ```
 pub struct Nucleo<T: Sync + Send + 'static> {
     // the way the API is build we totally don't actually need these to be Arcs
     // but this lets us avoid some unsafe
@@ -297,19 +342,20 @@ pub struct Nucleo<T: Sync + Send + 'static> {
     items: Arc<boxcar::Vec<T>>,
     notify: Arc<dyn Fn() + Sync + Send>,
     snapshot: Snapshot<T>,
-    /// The pattern matched by this matcher. To update the match pattern
-    /// [`MultiPattern::reparse`](`pattern::MultiPattern::reparse`) should be used.
-    /// Note that the matcher worker will only become aware of the new pattern
-    /// after a call to [`tick`](Nucleo::tick).
+    /// The pattern matched by this matcher.
+    ///
+    /// To update the match pattern, use [`MultiPattern::reparse`]. Note that
+    /// the matcher worker will only become aware of the new pattern after a
+    /// call to [`tick`](Nucleo::tick).
     pub pattern: MultiPattern,
 }
 
 impl<T: Sync + Send + 'static> Nucleo<T> {
     /// Constructs a new `nucleo` worker threadpool with the provided `config`.
     ///
-    /// `notify` is called everytime new information is available and
+    /// `notify` is called whenever new information is available and
     /// [`tick`](Nucleo::tick) should be called. Note that `notify` is not
-    /// debounced, that should be handled by the downstream crate (for example
+    /// debounced; that should be handled by the downstream crate (for example,
     /// debouncing to only redraw at most every 1/60 seconds).
     ///
     /// If `None` is passed for the number of worker threads, nucleo will use
@@ -343,7 +389,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         }
     }
 
-    /// Returns the total number of active injectors
+    /// Returns the total number of active injectors.
     pub fn active_injectors(&self) -> usize {
         Arc::strong_count(&self.items)
             - self.state.matcher_item_refs()
@@ -351,6 +397,9 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     }
 
     /// Returns a snapshot of the current matcher state.
+    ///
+    /// This method is very cheap and can be called every time a snapshot is required. The
+    /// snapshot will not change unless [`tick`](Nucleo::tick) is called.
     pub fn snapshot(&self) -> &Snapshot<T> {
         &self.snapshot
     }
@@ -400,10 +449,13 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         self.worker.lock().reverse_items(reverse_items)
     }
 
-    /// The main way to interact with the matcher, this should be called
-    /// regularly (for example each time a frame is rendered). To avoid
-    /// excessive redraws this method will wait `timeout` milliseconds for the
-    /// worker therad to finish. It is recommend to set the timeout to 10ms.
+    /// Update the internal state to reflect any changes from the background worker
+    /// threads.
+    ///
+    /// This is the main way to interact with the matcher, and should be called
+    /// regularly (for example each time a frame is rendered). To avoid excessive
+    /// redraws this method will wait `timeout` milliseconds for the
+    /// worker thread to finish. It is recommend to set the timeout to 10ms.
     pub fn tick(&mut self, timeout: u64) -> Status {
         self.should_notify.store(false, atomic::Ordering::Relaxed);
         let status = self.pattern.status();
