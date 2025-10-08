@@ -184,7 +184,7 @@ impl<T> Vec<T> {
     }
 
     /// Extends the vector by appending multiple elements at once.
-    pub fn extend<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
+    pub fn extend_exact<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
     where
         I: IntoIterator<Item = T> + ExactSizeIterator,
     {
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn extend_unique_bucket() {
         let vec = Vec::<u32>::with_capacity(1, 1);
-        vec.extend(0..10, |_, _| {});
+        vec.extend_exact(0..10, |_, _| {});
         assert_eq!(vec.count(), 10);
         for i in 0..10 {
             assert_eq!(*vec.get(i).unwrap().data, i);
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn extend_over_two_buckets() {
         let vec = Vec::<u32>::with_capacity(1, 1);
-        vec.extend(0..100, |_, _| {});
+        vec.extend_exact(0..100, |_, _| {});
         assert_eq!(vec.count(), 100);
         for i in 0..100 {
             assert_eq!(*vec.get(i).unwrap().data, i);
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn extend_over_more_than_two_buckets() {
         let vec = Vec::<u32>::with_capacity(1, 1);
-        vec.extend(0..1000, |_, _| {});
+        vec.extend_exact(0..1000, |_, _| {});
         assert_eq!(vec.count(), 1000);
         for i in 0..1000 {
             assert_eq!(*vec.get(i).unwrap().data, i);
@@ -762,7 +762,7 @@ mod tests {
             iter: (0..12),
         };
         // this should panic
-        assert!(std::panic::catch_unwind(|| vec.extend(iter, |_, _| {})).is_err());
+        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_err());
 
         let vec = Vec::<u32>::with_capacity(1, 1);
         let iter = IncorrectLenIter {
@@ -770,7 +770,7 @@ mod tests {
             iter: (0..10),
         };
         // this shouldn't panic and should just ignore the extra elements
-        assert!(std::panic::catch_unwind(|| vec.extend(iter, |_, _| {})).is_ok());
+        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_ok());
         // we should reserve 12 elements but only 10 should be present
         assert_eq!(vec.count(), 12);
         for i in 0..10 {
@@ -784,7 +784,7 @@ mod tests {
             iter: (0..2),
         };
         // this should panic
-        assert!(std::panic::catch_unwind(|| vec.extend(iter, |_, _| {})).is_err());
+        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_err());
     }
 
     // test |values| does not fit in the boxcar
@@ -794,6 +794,6 @@ mod tests {
         let vec = Vec::<u32>::with_capacity(1, 1);
         let count = MAX_ENTRIES as usize + 2;
         let iter = std::iter::repeat(0).take(count);
-        assert!(std::panic::catch_unwind(|| vec.extend(iter, |_, _| {})).is_err());
+        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_err());
     }
 }

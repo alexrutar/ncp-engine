@@ -102,11 +102,11 @@ impl<T> Injector<T> {
     /// - you're able to batch incoming items
     /// - you're adding items from multiple threads concurrently (this function results in less
     ///   contention)
-    pub fn extend<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
+    pub fn extend_exact<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
     where
         I: IntoIterator<Item = T> + ExactSizeIterator,
     {
-        self.items.extend(values, fill_columns);
+        self.items.extend_exact(values, fill_columns);
         (self.notify)();
     }
 
