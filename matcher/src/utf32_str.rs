@@ -296,10 +296,10 @@ impl DoubleEndedIterator for Chars<'_> {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 /// An owned version of [`Utf32Str`].
 ///
 /// See the API documentation for [`Utf32Str`] for more detail.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Utf32String {
     /// A string represented as ASCII encoded bytes.
     ///
