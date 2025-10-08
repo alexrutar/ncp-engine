@@ -709,7 +709,7 @@ fn test_prefer_prefix() {
                 "Moby Dick",
                 "md",
                 &[0, 5],
-                BONUS_BOUNDARY_WHITE * (BONUS_FIRST_CHAR_MULTIPLIER + 1)  + MAX_PREFIX_BONUS
+                BONUS_BOUNDARY_WHITE * (BONUS_FIRST_CHAR_MULTIPLIER + 1) + MAX_PREFIX_BONUS
                     - PENALTY_GAP_START
                     - 3 * PENALTY_GAP_EXTENSION,
             ),

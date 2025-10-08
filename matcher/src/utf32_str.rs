@@ -45,14 +45,14 @@ fn has_ascii_graphemes(string: &str) -> bool {
 /// In the presence of a multi-codepoint grapheme (e.g. `"u\u{0308}"` which is `u +
 /// COMBINING_DIAERESIS`), the trailing codepoints are truncated.
 /// ```
-/// # use nucleo_matcher::Utf32String;
+/// # use nucleo_matcher_unstable::Utf32String;
 /// assert_eq!(Utf32String::from("u\u{0308}").to_string(), "u");
 /// ```
 ///
 /// ### Indexing is done by grapheme
 /// Indexing into a string is done by grapheme rather than by codepoint.
 /// ```
-/// # use nucleo_matcher::Utf32String;
+/// # use nucleo_matcher_unstable::Utf32String;
 /// assert!(Utf32String::from("au\u{0308}").len() == 2);
 /// ```
 ///
@@ -60,7 +60,7 @@ fn has_ascii_graphemes(string: &str) -> bool {
 /// Since the windows-style newline `\r\n` is ASCII only but considered to be a single grapheme,
 /// strings containing `\r\n` will still result in a `Unicode` variant.
 /// ```
-/// # use nucleo_matcher::Utf32String;
+/// # use nucleo_matcher_unstable::Utf32String;
 /// let s = Utf32String::from("\r\n");
 /// assert!(!s.slice(..).is_ascii());
 /// assert!(s.len() == 1);

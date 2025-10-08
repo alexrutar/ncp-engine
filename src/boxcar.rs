@@ -145,10 +145,10 @@ impl<T> Vec<T> {
         let location = Location::of(index);
 
         // eagerly allocate the next bucket if we are close to the end of this one
-        if index == (location.bucket_len - (location.bucket_len >> 3)) {
-            if let Some(next_bucket) = self.buckets.get(location.bucket as usize + 1) {
-                Vec::get_or_alloc(next_bucket, location.bucket_len << 1, self.columns);
-            }
+        if index == (location.bucket_len - (location.bucket_len >> 3))
+            && let Some(next_bucket) = self.buckets.get(location.bucket as usize + 1)
+        {
+            Vec::get_or_alloc(next_bucket, location.bucket_len << 1, self.columns);
         }
 
         // safety: `location.bucket` is always in bounds
@@ -513,39 +513,45 @@ impl<T> Bucket<T> {
     }
 
     unsafe fn alloc(len: u32, cols: u32) -> *mut Entry<T> {
-        let layout = Entry::<T>::layout(cols);
-        let arr_layout = Self::layout(len, layout);
-        let entries = std::alloc::alloc(arr_layout);
-        if entries.is_null() {
-            std::alloc::handle_alloc_error(arr_layout)
-        }
+        unsafe {
+            let layout = Entry::<T>::layout(cols);
+            let arr_layout = Self::layout(len, layout);
+            let entries = std::alloc::alloc(arr_layout);
+            if entries.is_null() {
+                std::alloc::handle_alloc_error(arr_layout)
+            }
 
-        for i in 0..len {
-            let active = entries.add(i as usize * layout.size()) as *mut AtomicBool;
-            active.write(AtomicBool::new(false))
+            for i in 0..len {
+                let active = entries.add(i as usize * layout.size()) as *mut AtomicBool;
+                active.write(AtomicBool::new(false))
+            }
+            entries as *mut Entry<T>
         }
-        entries as *mut Entry<T>
     }
 
     unsafe fn dealloc(entries: *mut Entry<T>, len: u32, cols: u32) {
-        let layout = Entry::<T>::layout(cols);
-        let arr_layout = Self::layout(len, layout);
-        for i in 0..len {
-            let entry = Bucket::get(entries, i, cols);
-            if *(*entry).active.get_mut() {
-                ptr::drop_in_place((*(*entry).slot.get()).as_mut_ptr());
-                for matcher_col in Entry::matcher_cols_raw(entry, cols) {
-                    ptr::drop_in_place((*matcher_col.get()).as_mut_ptr());
+        unsafe {
+            let layout = Entry::<T>::layout(cols);
+            let arr_layout = Self::layout(len, layout);
+            for i in 0..len {
+                let entry = Bucket::get(entries, i, cols);
+                if *(*entry).active.get_mut() {
+                    ptr::drop_in_place((*(*entry).slot.get()).as_mut_ptr());
+                    for matcher_col in Entry::matcher_cols_raw(entry, cols) {
+                        ptr::drop_in_place((*matcher_col.get()).as_mut_ptr());
+                    }
                 }
             }
+            std::alloc::dealloc(entries as *mut u8, arr_layout)
         }
-        std::alloc::dealloc(entries as *mut u8, arr_layout)
     }
 
     unsafe fn get(entries: *mut Entry<T>, idx: u32, cols: u32) -> *mut Entry<T> {
-        let layout = Entry::<T>::layout(cols);
-        let ptr = entries as *mut u8;
-        ptr.add(layout.size() * idx as usize) as *mut Entry<T>
+        unsafe {
+            let layout = Entry::<T>::layout(cols);
+            let ptr = entries as *mut u8;
+            ptr.add(layout.size() * idx as usize) as *mut Entry<T>
+        }
     }
 
     fn new(entries: *mut Entry<T>) -> Bucket<T> {
@@ -576,39 +582,45 @@ impl<T> Entry<T> {
         ptr: *mut Entry<T>,
         cols: u32,
     ) -> &'a [UnsafeCell<MaybeUninit<Utf32String>>] {
-        // this whole thing looks weird. The reason we do this is that
-        // we must make sure the pointer retains its provenance which may (or may not?)
-        // be lost if we used tail.as_ptr()
-        let tail = std::ptr::addr_of!((*ptr).tail) as *const u8;
-        let offset = tail.offset_from(ptr as *mut u8) as usize;
-        let ptr = (ptr as *mut u8).add(offset) as *mut _;
-        slice::from_raw_parts(ptr, cols as usize)
+        unsafe {
+            // this whole thing looks weird. The reason we do this is that
+            // we must make sure the pointer retains its provenance which may (or may not?)
+            // be lost if we used tail.as_ptr()
+            let tail = std::ptr::addr_of!((*ptr).tail) as *const u8;
+            let offset = tail.offset_from(ptr as *mut u8) as usize;
+            let ptr = (ptr as *mut u8).add(offset) as *mut _;
+            slice::from_raw_parts(ptr, cols as usize)
+        }
     }
 
     unsafe fn matcher_cols_mut<'a>(ptr: *mut Entry<T>, cols: u32) -> &'a mut [Utf32String] {
-        // this whole thing looks weird. The reason we do this is that
-        // we must make sure the pointer retains its provenance which may (or may not?)
-        // be lost if we used tail.as_ptr()
-        let tail = std::ptr::addr_of!((*ptr).tail) as *const u8;
-        let offset = tail.offset_from(ptr as *mut u8) as usize;
-        let ptr = (ptr as *mut u8).add(offset) as *mut _;
-        slice::from_raw_parts_mut(ptr, cols as usize)
+        unsafe {
+            // this whole thing looks weird. The reason we do this is that
+            // we must make sure the pointer retains its provenance which may (or may not?)
+            // be lost if we used tail.as_ptr()
+            let tail = std::ptr::addr_of!((*ptr).tail) as *const u8;
+            let offset = tail.offset_from(ptr as *mut u8) as usize;
+            let ptr = (ptr as *mut u8).add(offset) as *mut _;
+            slice::from_raw_parts_mut(ptr, cols as usize)
+        }
     }
     // # Safety
     //
     // Value must be initialized.
     unsafe fn read<'a>(ptr: *mut Entry<T>, cols: u32) -> Item<'a, T> {
-        // this whole thing looks weird. The reason we do this is that
-        // we must make sure the pointer retains its provenance which may (or may not?)
-        // be lost if we used tail.as_ptr()
-        let data = (*(*ptr).slot.get()).assume_init_ref();
-        let tail = std::ptr::addr_of!((*ptr).tail) as *const u8;
-        let offset = tail.offset_from(ptr as *mut u8) as usize;
-        let ptr = (ptr as *mut u8).add(offset) as *mut _;
-        let matcher_columns = slice::from_raw_parts(ptr, cols as usize);
-        Item {
-            data,
-            matcher_columns,
+        unsafe {
+            // this whole thing looks weird. The reason we do this is that
+            // we must make sure the pointer retains its provenance which may (or may not?)
+            // be lost if we used tail.as_ptr()
+            let data = (*(*ptr).slot.get()).assume_init_ref();
+            let tail = std::ptr::addr_of!((*ptr).tail) as *const u8;
+            let offset = tail.offset_from(ptr as *mut u8) as usize;
+            let ptr = (ptr as *mut u8).add(offset) as *mut _;
+            let matcher_columns = slice::from_raw_parts(ptr, cols as usize);
+            Item {
+                data,
+                matcher_columns,
+            }
         }
     }
 }

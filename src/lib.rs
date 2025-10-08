@@ -27,8 +27,8 @@ changes in the future.
 
 */
 use std::ops::{Bound, RangeBounds};
-use std::sync::atomic::{self, AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{self, AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -36,7 +36,7 @@ use rayon::ThreadPool;
 
 use crate::pattern::MultiPattern;
 use crate::worker::Worker;
-pub use nucleo_matcher::{chars, Config, Matcher, Utf32Str, Utf32String};
+pub use nucleo_matcher::{Config, Matcher, Utf32Str, Utf32String, chars};
 
 mod boxcar;
 mod par_sort;
@@ -58,7 +58,7 @@ pub struct Item<'a, T> {
 /// and sent across threads.
 pub struct Injector<T> {
     items: Arc<boxcar::Vec<T>>,
-    notify: Arc<(dyn Fn() + Sync + Send)>,
+    notify: Arc<dyn Fn() + Sync + Send>,
 }
 
 impl<T> Clone for Injector<T> {
@@ -112,7 +112,7 @@ impl<T> Injector<T> {
     /// Just because a later index is initialized doesn't mean that this index
     /// is initialized
     pub unsafe fn get_unchecked(&self, index: u32) -> Item<'_, T> {
-        self.items.get_unchecked(index)
+        unsafe { self.items.get_unchecked(index) }
     }
 
     /// Returns a reference to the element at the given index.
@@ -213,7 +213,7 @@ impl<T: Sync + Send + 'static> Snapshot<T> {
     /// initialized
     #[inline]
     pub unsafe fn get_item_unchecked(&self, index: u32) -> Item<'_, T> {
-        self.items.get_unchecked(index)
+        unsafe { self.items.get_unchecked(index) }
     }
 
     /// Returns a reference to the item at the given index.
@@ -283,7 +283,7 @@ pub struct Nucleo<T: Sync + Send + 'static> {
     pool: ThreadPool,
     state: State,
     items: Arc<boxcar::Vec<T>>,
-    notify: Arc<(dyn Fn() + Sync + Send)>,
+    notify: Arc<dyn Fn() + Sync + Send>,
     snapshot: Snapshot<T>,
     /// The pattern matched by this matcher. To update the match pattern
     /// [`MultiPattern::reparse`](`pattern::MultiPattern::reparse`) should be used.
@@ -308,7 +308,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     /// number of columns cannot be changed after construction.
     pub fn new(
         config: Config,
-        notify: Arc<(dyn Fn() + Sync + Send)>,
+        notify: Arc<dyn Fn() + Sync + Send>,
         num_threads: Option<usize>,
         columns: u32,
     ) -> Self {

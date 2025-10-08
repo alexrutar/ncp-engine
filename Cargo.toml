@@ -3,7 +3,7 @@ name = "nucleo-unstable"
 description = "plug and play high performance fuzzy matcher"
 authors = ["Pascal Kuthe <pascalkuthe@pm.me>"]
 version = "0.0.1-alpha.1"
-edition = "2021"
+edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/alexrutar/nucleo-unstable"
 readme = "README.md"
@@ -13,8 +13,8 @@ exclude = ["/typos.toml", "/tarpaulin.toml"]
 
 [dependencies]
 nucleo-matcher = { version = "0.0.1-alpha.1", path = "matcher", package = "nucleo-matcher-unstable" }
-parking_lot = { version = "0.12.1", features = ["send_guard", "arc_lock"] }
-rayon = "1.7.0"
+parking_lot = { version = "0.12.5", features = ["send_guard", "arc_lock"] }
+rayon = "1.11.0"
 
 [workspace]
 members = ["matcher"]

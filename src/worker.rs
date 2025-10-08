@@ -1,15 +1,15 @@
 use std::cell::UnsafeCell;
 use std::mem::take;
-use std::sync::atomic::{self, AtomicBool, AtomicU32};
 use std::sync::Arc;
+use std::sync::atomic::{self, AtomicBool, AtomicU32};
 
 use nucleo_matcher::Config;
 use parking_lot::Mutex;
-use rayon::{prelude::*, ThreadPool};
+use rayon::{ThreadPool, prelude::*};
 
 use crate::par_sort::par_quicksort;
 use crate::pattern::{self, MultiPattern};
-use crate::{boxcar, Match};
+use crate::{Match, boxcar};
 
 struct Matchers(Box<[UnsafeCell<nucleo_matcher::Matcher>]>);
 
@@ -17,7 +17,7 @@ impl Matchers {
     // this is not a true mut from ref, we use a cell here
     #[allow(clippy::mut_from_ref)]
     unsafe fn get(&self) -> &mut nucleo_matcher::Matcher {
-        &mut *self.0[rayon::current_thread_index().unwrap()].get()
+        unsafe { &mut *self.0[rayon::current_thread_index().unwrap()].get() }
     }
 }
 
@@ -35,7 +35,7 @@ pub(crate) struct Worker<T: Sync + Send + 'static> {
     pub(crate) should_notify: Arc<AtomicBool>,
     pub(crate) was_canceled: bool,
     pub(crate) last_snapshot: u32,
-    notify: Arc<(dyn Fn() + Sync + Send)>,
+    notify: Arc<dyn Fn() + Sync + Send>,
     pub(crate) items: Arc<boxcar::Vec<T>>,
     in_flight: Vec<u32>,
 }
@@ -59,7 +59,7 @@ impl<T: Sync + Send + 'static> Worker<T> {
     pub(crate) fn new(
         worker_threads: Option<usize>,
         config: Config,
-        notify: Arc<(dyn Fn() + Sync + Send)>,
+        notify: Arc<dyn Fn() + Sync + Send>,
         cols: u32,
     ) -> (ThreadPool, Self) {
         let worker_threads = worker_threads
@@ -92,45 +92,47 @@ impl<T: Sync + Send + 'static> Worker<T> {
     }
 
     unsafe fn process_new_items(&mut self, unmatched: &AtomicU32) {
-        let matchers = &self.matchers;
-        let pattern = &self.pattern;
-        self.matches.reserve(self.in_flight.len());
-        self.in_flight.retain(|&idx| {
-            let Some(item) = self.items.get(idx) else {
-                return true;
-            };
-            if let Some(score) = pattern.score(item.matcher_columns, matchers.get()) {
-                self.matches.push(Match { score, idx });
-            };
-            false
-        });
-        let new_snapshot = self.items.par_snapshot(self.last_snapshot);
-        if new_snapshot.end() != self.last_snapshot {
-            let end = new_snapshot.end();
-            let in_flight = Mutex::new(&mut self.in_flight);
-            let items = new_snapshot.map(|(idx, item)| {
-                let Some(item) = item else {
-                    in_flight.lock().push(idx);
-                    unmatched.fetch_add(1, atomic::Ordering::Relaxed);
-                    return Match {
-                        score: 0,
-                        idx: u32::MAX,
-                    };
+        unsafe {
+            let matchers = &self.matchers;
+            let pattern = &self.pattern;
+            self.matches.reserve(self.in_flight.len());
+            self.in_flight.retain(|&idx| {
+                let Some(item) = self.items.get(idx) else {
+                    return true;
                 };
-                if self.canceled.load(atomic::Ordering::Relaxed) {
-                    return Match { score: 0, idx };
-                }
-                let Some(score) = pattern.score(item.matcher_columns, matchers.get()) else {
-                    unmatched.fetch_add(1, atomic::Ordering::Relaxed);
-                    return Match {
-                        score: 0,
-                        idx: u32::MAX,
-                    };
+                if let Some(score) = pattern.score(item.matcher_columns, matchers.get()) {
+                    self.matches.push(Match { score, idx });
                 };
-                Match { score, idx }
+                false
             });
-            self.matches.par_extend(items);
-            self.last_snapshot = end;
+            let new_snapshot = self.items.par_snapshot(self.last_snapshot);
+            if new_snapshot.end() != self.last_snapshot {
+                let end = new_snapshot.end();
+                let in_flight = Mutex::new(&mut self.in_flight);
+                let items = new_snapshot.map(|(idx, item)| {
+                    let Some(item) = item else {
+                        in_flight.lock().push(idx);
+                        unmatched.fetch_add(1, atomic::Ordering::Relaxed);
+                        return Match {
+                            score: 0,
+                            idx: u32::MAX,
+                        };
+                    };
+                    if self.canceled.load(atomic::Ordering::Relaxed) {
+                        return Match { score: 0, idx };
+                    }
+                    let Some(score) = pattern.score(item.matcher_columns, matchers.get()) else {
+                        unmatched.fetch_add(1, atomic::Ordering::Relaxed);
+                        return Match {
+                            score: 0,
+                            idx: u32::MAX,
+                        };
+                    };
+                    Match { score, idx }
+                });
+                self.matches.par_extend(items);
+                self.last_snapshot = end;
+            }
         }
     }
 
@@ -147,147 +149,153 @@ impl<T: Sync + Send + 'static> Worker<T> {
     }
 
     unsafe fn process_new_items_trivial(&mut self) {
-        let new_snapshot = self.items.snapshot(self.last_snapshot);
-        if new_snapshot.end() != self.last_snapshot {
-            let end = new_snapshot.end();
-            let items = new_snapshot.filter_map(|(idx, item)| {
-                if item.is_none() {
-                    self.in_flight.push(idx);
-                    return None;
-                };
-                Some(Match { score: 0, idx })
-            });
-            self.matches.extend(items);
-            self.last_snapshot = end;
+        unsafe {
+            let new_snapshot = self.items.snapshot(self.last_snapshot);
+            if new_snapshot.end() != self.last_snapshot {
+                let end = new_snapshot.end();
+                let items = new_snapshot.filter_map(|(idx, item)| {
+                    if item.is_none() {
+                        self.in_flight.push(idx);
+                        return None;
+                    };
+                    Some(Match { score: 0, idx })
+                });
+                self.matches.extend(items);
+                self.last_snapshot = end;
+            }
         }
     }
 
     pub(crate) unsafe fn run(&mut self, pattern_status: pattern::Status, cleared: bool) {
-        self.running = true;
-        self.was_canceled = false;
+        unsafe {
+            self.running = true;
+            self.was_canceled = false;
 
-        if cleared {
-            self.last_snapshot = 0;
-            self.in_flight.clear();
-            self.matches.clear();
-        }
+            if cleared {
+                self.last_snapshot = 0;
+                self.in_flight.clear();
+                self.matches.clear();
+            }
 
-        // TODO: be smarter around reusing past results for rescoring
-        if self.pattern.is_empty() {
-            self.reset_matches();
-            self.process_new_items_trivial();
+            // TODO: be smarter around reusing past results for rescoring
+            if self.pattern.is_empty() {
+                self.reset_matches();
+                self.process_new_items_trivial();
+                let canceled = self.sort_matches();
+                if canceled {
+                    self.was_canceled = true;
+                } else if self.should_notify.load(atomic::Ordering::Relaxed) {
+                    (self.notify)();
+                }
+                return;
+            }
+
+            if pattern_status == pattern::Status::Rescore {
+                self.reset_matches();
+            }
+
+            let mut unmatched = AtomicU32::new(0);
+            if pattern_status != pattern::Status::Unchanged && !self.matches.is_empty() {
+                self.process_new_items_trivial();
+                let matchers = &self.matchers;
+                let pattern = &self.pattern;
+                self.matches
+                    .par_iter_mut()
+                    .take_any_while(|_| !self.canceled.load(atomic::Ordering::Relaxed))
+                    .for_each(|match_| {
+                        if match_.idx == u32::MAX {
+                            debug_assert_eq!(match_.score, 0);
+                            unmatched.fetch_add(1, atomic::Ordering::Relaxed);
+                            return;
+                        }
+                        // safety: in-flight items are never added to the matches
+                        let item = self.items.get_unchecked(match_.idx);
+                        if let Some(score) = pattern.score(item.matcher_columns, matchers.get()) {
+                            match_.score = score;
+                        } else {
+                            unmatched.fetch_add(1, atomic::Ordering::Relaxed);
+                            match_.score = 0;
+                            match_.idx = u32::MAX;
+                        }
+                    });
+            } else {
+                self.process_new_items(&unmatched);
+            }
+
             let canceled = self.sort_matches();
             if canceled {
                 self.was_canceled = true;
-            } else if self.should_notify.load(atomic::Ordering::Relaxed) {
-                (self.notify)();
-            }
-            return;
-        }
-
-        if pattern_status == pattern::Status::Rescore {
-            self.reset_matches();
-        }
-
-        let mut unmatched = AtomicU32::new(0);
-        if pattern_status != pattern::Status::Unchanged && !self.matches.is_empty() {
-            self.process_new_items_trivial();
-            let matchers = &self.matchers;
-            let pattern = &self.pattern;
-            self.matches
-                .par_iter_mut()
-                .take_any_while(|_| !self.canceled.load(atomic::Ordering::Relaxed))
-                .for_each(|match_| {
-                    if match_.idx == u32::MAX {
-                        debug_assert_eq!(match_.score, 0);
-                        unmatched.fetch_add(1, atomic::Ordering::Relaxed);
-                        return;
-                    }
-                    // safety: in-flight items are never added to the matches
-                    let item = self.items.get_unchecked(match_.idx);
-                    if let Some(score) = pattern.score(item.matcher_columns, matchers.get()) {
-                        match_.score = score;
-                    } else {
-                        unmatched.fetch_add(1, atomic::Ordering::Relaxed);
-                        match_.score = 0;
-                        match_.idx = u32::MAX;
-                    }
-                });
-        } else {
-            self.process_new_items(&unmatched);
-        }
-
-        let canceled = self.sort_matches();
-        if canceled {
-            self.was_canceled = true;
-        } else {
-            self.matches
-                .truncate(self.matches.len() - take(unmatched.get_mut()) as usize);
-            if self.should_notify.load(atomic::Ordering::Relaxed) {
-                (self.notify)();
+            } else {
+                self.matches
+                    .truncate(self.matches.len() - take(unmatched.get_mut()) as usize);
+                if self.should_notify.load(atomic::Ordering::Relaxed) {
+                    (self.notify)();
+                }
             }
         }
     }
 
     unsafe fn sort_matches(&mut self) -> bool {
-        if self.sort_results {
-            par_quicksort(
-                &mut self.matches,
-                |match1, match2| {
-                    if match1.score != match2.score {
-                        return match1.score > match2.score;
-                    }
-                    if match1.idx == u32::MAX {
-                        return false;
-                    }
-                    if match2.idx == u32::MAX {
-                        return true;
-                    }
-                    // the tie breaker is comparatively rarely needed so we keep it
-                    // in a branch especially because we need to access the items
-                    // array here which involves some pointer chasing
-                    let item1 = self.items.get_unchecked(match1.idx);
-                    let item2 = &self.items.get_unchecked(match2.idx);
-                    let len1: u32 = item1
-                        .matcher_columns
-                        .iter()
-                        .map(|haystack| haystack.len() as u32)
-                        .sum();
-                    let len2 = item2
-                        .matcher_columns
-                        .iter()
-                        .map(|haystack| haystack.len() as u32)
-                        .sum();
-                    if len1 == len2 {
+        unsafe {
+            if self.sort_results {
+                par_quicksort(
+                    &mut self.matches,
+                    |match1, match2| {
+                        if match1.score != match2.score {
+                            return match1.score > match2.score;
+                        }
+                        if match1.idx == u32::MAX {
+                            return false;
+                        }
+                        if match2.idx == u32::MAX {
+                            return true;
+                        }
+                        // the tie breaker is comparatively rarely needed so we keep it
+                        // in a branch especially because we need to access the items
+                        // array here which involves some pointer chasing
+                        let item1 = self.items.get_unchecked(match1.idx);
+                        let item2 = &self.items.get_unchecked(match2.idx);
+                        let len1: u32 = item1
+                            .matcher_columns
+                            .iter()
+                            .map(|haystack| haystack.len() as u32)
+                            .sum();
+                        let len2 = item2
+                            .matcher_columns
+                            .iter()
+                            .map(|haystack| haystack.len() as u32)
+                            .sum();
+                        if len1 == len2 {
+                            if self.reverse_items {
+                                match2.idx < match1.idx
+                            } else {
+                                match1.idx < match2.idx
+                            }
+                        } else {
+                            len1 < len2
+                        }
+                    },
+                    &self.canceled,
+                )
+            } else {
+                par_quicksort(
+                    &mut self.matches,
+                    |match1, match2| {
+                        if match1.idx == u32::MAX {
+                            return false;
+                        }
+                        if match2.idx == u32::MAX {
+                            return true;
+                        }
                         if self.reverse_items {
                             match2.idx < match1.idx
                         } else {
                             match1.idx < match2.idx
                         }
-                    } else {
-                        len1 < len2
-                    }
-                },
-                &self.canceled,
-            )
-        } else {
-            par_quicksort(
-                &mut self.matches,
-                |match1, match2| {
-                    if match1.idx == u32::MAX {
-                        return false;
-                    }
-                    if match2.idx == u32::MAX {
-                        return true;
-                    }
-                    if self.reverse_items {
-                        match2.idx < match1.idx
-                    } else {
-                        match1.idx < match2.idx
-                    }
-                },
-                &self.canceled,
-            )
+                    },
+                    &self.canceled,
+                )
+            }
         }
     }
 
