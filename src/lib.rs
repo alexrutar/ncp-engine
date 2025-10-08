@@ -89,7 +89,7 @@ impl<T> Injector<T> {
     /// If the matcher has exactly one column and the item type `T` is a `String`, an appropriate
     /// `fill_columns` closure might look like
     /// ```
-    /// # use nucleo::Utf32String;
+    /// # use nucleo_unstable::Utf32String;
     /// let fill_columns = |s: &String, cols: &mut [Utf32String]| {
     ///      cols[0] = (&**s).into();
     /// };
@@ -309,7 +309,7 @@ impl State {
 /// use std::sync::Arc;
 /// use std::thread;
 ///
-/// use nucleo::{Config, Nucleo};
+/// use nucleo_unstable::{Config, Nucleo};
 ///
 /// static NEEDS_UPDATE: AtomicBool = AtomicBool::new(false);
 ///
@@ -437,14 +437,14 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         self.worker.lock().update_config(config)
     }
 
-    // Set whether the matcher should sort search results by score after
-    // matching. Defaults to true.
+    /// Set whether the matcher should sort search results by score after
+    /// matching. Defaults to true.
     pub fn sort_results(&mut self, sort_results: bool) {
         self.worker.lock().sort_results(sort_results)
     }
 
-    // Set whether the matcher should reverse the order of the input.
-    // Defaults to false.
+    /// Set whether the matcher should reverse the order of the input.
+    /// Defaults to false.
     pub fn reverse_items(&mut self, reverse_items: bool) {
         self.worker.lock().reverse_items(reverse_items)
     }
