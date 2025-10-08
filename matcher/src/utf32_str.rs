@@ -252,20 +252,22 @@ impl<'a> Utf32Str<'a> {
 
 impl fmt::Debug for Utf32Str<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "\"")?;
+        use std::fmt::Write;
+        f.write_char('"')?;
         for c in self.chars() {
             for c in c.escape_debug() {
-                write!(f, "{c}")?
+                f.write_char(c)?;
             }
         }
-        write!(f, "\"")
+        f.write_char('"')
     }
 }
 
 impl fmt::Display for Utf32Str<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use std::fmt::Write;
         for c in self.chars() {
-            write!(f, "{c}")?
+            f.write_char(c)?;
         }
         Ok(())
     }
@@ -419,12 +421,12 @@ impl<'a> From<Cow<'a, str>> for Utf32String {
 
 impl fmt::Debug for Utf32String {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.slice(..))
+        fmt::Debug::fmt(&self.slice(..), f)
     }
 }
 
 impl fmt::Display for Utf32String {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.slice(..))
+        fmt::Display::fmt(&self.slice(..), f)
     }
 }
