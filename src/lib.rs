@@ -1,10 +1,10 @@
-//! # Nucleo-unstable
+//! # Nucleo-picker-engine
 //!
-//! The `nucleo_unstable` crate is a fork of the [nucleo](https://docs.rs/nucleo) crate.
+//! The `ncp-engine` crate is a fork of the [nucleo](https://docs.rs/nucleo) crate.
 //! It is not recommended for general use. This fork mainly exists to meet the specific
-//! requirements of `nucleo-picker`.
+//! requirements of [`nucleo-picker`](https://docs.rs/nucleo-picker).
 //!
-//! `nucleo_unstable` implements a high level matcher API that provides a performant
+//! `ncp-engine` implements a high level matcher API that provides a performant
 //! parallel matcher worker threadpool. It is designed to allow integrating a `fzf`-like
 //! fuzzy matcher into a TUI application.
 //!
@@ -30,7 +30,7 @@ use rayon::ThreadPool;
 
 use crate::pattern::MultiPattern;
 use crate::worker::Worker;
-pub use nucleo_matcher::{Config, Matcher, Utf32Str, Utf32String, chars};
+pub use ncp_matcher::{Config, Matcher, Utf32Str, Utf32String, chars};
 
 mod boxcar;
 mod par_sort;
@@ -82,7 +82,7 @@ impl<T> Injector<T> {
     /// If the matcher has exactly one column and the item type `T` is a `String`, an appropriate
     /// `fill_columns` closure might look like
     /// ```
-    /// # use nucleo_unstable::Utf32String;
+    /// # use ncp_engine::Utf32String;
     /// let fill_columns = |s: &String, cols: &mut [Utf32String]| {
     ///      cols[0] = (&**s).into();
     /// };
@@ -302,7 +302,7 @@ impl State {
 /// use std::sync::Arc;
 /// use std::thread;
 ///
-/// use nucleo_unstable::{Config, Nucleo};
+/// use ncp_engine::{Config, Nucleo};
 ///
 /// static NEEDS_UPDATE: AtomicBool = AtomicBool::new(false);
 ///

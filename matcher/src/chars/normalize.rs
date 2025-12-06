@@ -19,7 +19,7 @@
 ///
 /// # Example
 /// ```
-/// # use nucleo_matcher_unstable::chars::normalize;
+/// # use ncp_matcher::chars::normalize;
 /// assert_eq!(normalize('ä'), 'a');
 /// assert_eq!(normalize('Æ'), 'Æ');
 /// assert_eq!(normalize('ữ'), 'u');

@@ -3,7 +3,7 @@ use std::mem::take;
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicBool, AtomicU32};
 
-use nucleo_matcher::Config;
+use ncp_matcher::Config;
 use parking_lot::Mutex;
 use rayon::{ThreadPool, prelude::*};
 
@@ -11,12 +11,12 @@ use crate::par_sort::par_quicksort;
 use crate::pattern::{self, MultiPattern};
 use crate::{Match, boxcar};
 
-struct Matchers(Box<[UnsafeCell<nucleo_matcher::Matcher>]>);
+struct Matchers(Box<[UnsafeCell<ncp_matcher::Matcher>]>);
 
 impl Matchers {
     // this is not a true mut from ref, we use a cell here
     #[allow(clippy::mut_from_ref)]
-    unsafe fn get(&self) -> &mut nucleo_matcher::Matcher {
+    unsafe fn get(&self) -> &mut ncp_matcher::Matcher {
         unsafe { &mut *self.0[rayon::current_thread_index().unwrap()].get() }
     }
 }
@@ -70,7 +70,7 @@ impl<T: Sync + Send + 'static> Worker<T> {
             .build()
             .expect("creating threadpool failed");
         let matchers = (0..worker_threads)
-            .map(|_| UnsafeCell::new(nucleo_matcher::Matcher::new(config.clone())))
+            .map(|_| UnsafeCell::new(ncp_matcher::Matcher::new(config.clone())))
             .collect();
         let worker = Worker {
             running: false,

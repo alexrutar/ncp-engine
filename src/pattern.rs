@@ -1,6 +1,6 @@
 //! Patterns to prescribe matching behaviour.
-pub use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Matcher, Utf32String};
+pub use ncp_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
+use ncp_matcher::{Matcher, Utf32String};
 
 #[cfg(test)]
 mod tests;
