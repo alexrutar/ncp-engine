@@ -186,15 +186,17 @@ impl<T> Vec<T> {
     /// Extends the vector by appending multiple elements at once.
     pub fn extend_exact<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
     where
-        I: IntoIterator<Item = T> + ExactSizeIterator,
+        I: IntoIterator<Item = T>,
+        <I as IntoIterator>::IntoIter: ExactSizeIterator,
     {
+        let mut values = values.into_iter();
         let count: u32 = values
             .len()
             .try_into()
             .expect("overflowed maximum capacity");
         if count == 0 {
             assert!(
-                values.into_iter().next().is_none(),
+                values.next().is_none(),
                 "The `values` variable reported incorrect length."
             );
             return;
@@ -234,7 +236,7 @@ impl<T> Vec<T> {
         // Route each value to its corresponding bucket
         let mut location;
         let count = count as usize;
-        for (i, v) in values.into_iter().enumerate() {
+        for (i, v) in values.enumerate() {
             // ExactSizeIterator is a safe trait that can have bugs/lie about it's size.
             // Unsafe code cannot rely on the reported length being correct.
             assert!(i < count);

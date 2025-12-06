@@ -105,7 +105,8 @@ impl<T> Injector<T> {
     ///   contention)
     pub fn extend_exact<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
     where
-        I: IntoIterator<Item = T> + ExactSizeIterator,
+        I: IntoIterator<Item = T>,
+        <I as IntoIterator>::IntoIter: ExactSizeIterator,
     {
         self.items.extend_exact(values, fill_columns);
         (self.notify)();
