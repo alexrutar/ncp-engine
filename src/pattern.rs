@@ -27,7 +27,7 @@ impl Clone for MultiPattern {
     }
 
     fn clone_from(&mut self, source: &Self) {
-        self.cols.clone_from(&source.cols)
+        self.cols.clone_from(&source.cols);
     }
 }
 
@@ -93,7 +93,7 @@ impl MultiPattern {
 
     pub(crate) fn reset_status(&mut self) {
         for (_, status) in &mut self.cols {
-            *status = Status::Unchanged
+            *status = Status::Unchanged;
         }
     }
 
@@ -102,7 +102,7 @@ impl MultiPattern {
         // TODO: weight columns?
         let mut score = 0;
         for ((pattern, _), haystack) in self.cols.iter().zip(haystack) {
-            score += pattern.score(haystack.slice(..), matcher)?
+            score += pattern.score(haystack.slice(..), matcher)?;
         }
         Some(score)
     }

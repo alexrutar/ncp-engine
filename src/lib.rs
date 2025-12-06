@@ -59,7 +59,7 @@ pub struct Injector<T> {
 
 impl<T> Clone for Injector<T> {
     fn clone(&self) -> Self {
-        Injector {
+        Self {
             items: self.items.clone(),
             notify: self.notify.clone(),
         }
@@ -171,7 +171,7 @@ impl<T: Sync + Send + 'static> Snapshot<T> {
     fn clear(&mut self, new_items: Arc<boxcar::Vec<T>>) {
         self.item_count = 0;
         self.matches.clear();
-        self.items = new_items
+        self.items = new_items;
     }
 
     fn update(&mut self, worker: &Worker<T>) {
@@ -179,7 +179,7 @@ impl<T: Sync + Send + 'static> Snapshot<T> {
         self.pattern.clone_from(&worker.pattern);
         self.matches.clone_from(&worker.matches);
         if !Arc::ptr_eq(&worker.items, &self.items) {
-            self.items = worker.items.clone()
+            self.items = worker.items.clone();
         }
     }
 
@@ -279,17 +279,17 @@ enum State {
 impl State {
     fn matcher_item_refs(self) -> usize {
         match self {
-            State::Cleared => 1,
-            State::Init | State::Fresh => 2,
+            Self::Cleared => 1,
+            Self::Init | Self::Fresh => 2,
         }
     }
 
     fn canceled(self) -> bool {
-        self != State::Fresh
+        self != Self::Fresh
     }
 
     fn cleared(self) -> bool {
-        self != State::Fresh
+        self != Self::Fresh
     }
 }
 
@@ -427,19 +427,19 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
 
     /// Update the internal configuration.
     pub fn update_config(&mut self, config: Config) {
-        self.worker.lock().update_config(config)
+        self.worker.lock().update_config(config);
     }
 
     /// Set whether the matcher should sort search results by score after
     /// matching. Defaults to true.
     pub fn sort_results(&mut self, sort_results: bool) {
-        self.worker.lock().sort_results(sort_results)
+        self.worker.lock().sort_results(sort_results);
     }
 
     /// Set whether the matcher should reverse the order of the input.
     /// Defaults to false.
     pub fn reverse_items(&mut self, reverse_items: bool) {
-        self.worker.lock().reverse_items(reverse_items)
+        self.worker.lock().reverse_items(reverse_items);
     }
 
     /// Update the internal state to reflect any changes from the background worker
@@ -486,7 +486,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         if inner.running {
             inner.running = false;
             if !inner.was_canceled && !self.state.canceled() {
-                self.snapshot.update(&inner)
+                self.snapshot.update(&inner);
             }
         }
         if running {
@@ -500,7 +500,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
                 inner.items = self.items.clone();
             }
             self.pool
-                .spawn(move || unsafe { inner.run(status, cleared) })
+                .spawn(move || unsafe { inner.run(status, cleared) });
         }
         Status { changed, running }
     }

@@ -62,8 +62,9 @@ impl<T: Sync + Send + 'static> Worker<T> {
         notify: Arc<dyn Fn() + Sync + Send>,
         cols: u32,
     ) -> (ThreadPool, Self) {
-        let worker_threads = worker_threads
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |it| it.get()));
+        let worker_threads = worker_threads.unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
+        });
         let pool = rayon::ThreadPoolBuilder::new()
             .thread_name(|i| format!("nucleo worker {i}"))
             .num_threads(worker_threads)
@@ -72,7 +73,7 @@ impl<T: Sync + Send + 'static> Worker<T> {
         let matchers = (0..worker_threads)
             .map(|_| UnsafeCell::new(ncp_matcher::Matcher::new(config.clone())))
             .collect();
-        let worker = Worker {
+        let worker = Self {
             running: false,
             matchers: Matchers(matchers),
             last_snapshot: 0,
