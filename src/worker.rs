@@ -11,6 +11,28 @@ use crate::par_sort::par_quicksort;
 use crate::pattern::{self, MultiPattern};
 use crate::{Match, boxcar};
 
+/// Configuration which influences the match list.
+pub struct MatchListConfig {
+    /// Whether the matcher should sort results by score after matching.
+    pub sort_results: bool,
+    /// Whether the matcher should reverse the order of the input.
+    pub reverse_items: bool,
+}
+
+impl Default for MatchListConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl MatchListConfig {
+    /// The default value, implemented as a constant since the Default trait is not const.
+    pub const DEFAULT: Self = Self {
+        sort_results: true,
+        reverse_items: false,
+    };
+}
+
 struct Matchers(Box<[UnsafeCell<ncp_matcher::Matcher>]>);
 
 impl Matchers {
@@ -61,6 +83,7 @@ impl<T: Sync + Send + 'static> Worker<T> {
         config: Config,
         notify: Arc<dyn Fn() + Sync + Send>,
         cols: u32,
+        match_config: MatchListConfig,
     ) -> (ThreadPool, Self) {
         let worker_threads = worker_threads.unwrap_or_else(|| {
             std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
@@ -80,8 +103,8 @@ impl<T: Sync + Send + 'static> Worker<T> {
             matches: Vec::new(),
             // just a placeholder
             pattern: MultiPattern::new(cols as usize),
-            sort_results: true,
-            reverse_items: false,
+            sort_results: match_config.sort_results,
+            reverse_items: match_config.reverse_items,
             canceled: Arc::new(AtomicBool::new(false)),
             should_notify: Arc::new(AtomicBool::new(false)),
             was_canceled: false,

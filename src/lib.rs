@@ -29,6 +29,7 @@ use parking_lot::Mutex;
 use rayon::ThreadPool;
 
 use crate::pattern::MultiPattern;
+pub use crate::worker::MatchListConfig;
 use crate::worker::Worker;
 pub use ncp_matcher::{Config, Matcher, Utf32Str, Utf32String, chars};
 
@@ -363,7 +364,31 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         num_threads: Option<usize>,
         columns: u32,
     ) -> Self {
-        let (pool, worker) = Worker::new(num_threads, config, notify.clone(), columns);
+        Self::with_match_list_config(
+            config,
+            notify,
+            num_threads,
+            columns,
+            MatchListConfig::DEFAULT,
+        )
+    }
+
+    /// Constructs a new worker threadpool with the provided configuration, with pre-defined
+    /// configuration for the match list.
+    pub fn with_match_list_config(
+        config: Config,
+        notify: Arc<dyn Fn() + Sync + Send>,
+        num_threads: Option<usize>,
+        columns: u32,
+        match_list_config: MatchListConfig,
+    ) -> Self {
+        let (pool, worker) = Worker::new(
+            num_threads,
+            config,
+            notify.clone(),
+            columns,
+            match_list_config,
+        );
         Self {
             canceled: worker.canceled.clone(),
             should_notify: worker.should_notify.clone(),
