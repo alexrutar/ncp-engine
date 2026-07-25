@@ -12,6 +12,8 @@ use crate::chars::case_fold::CASE_FOLDING_SIMPLE;
 #[cfg(feature = "unicode-casefold")]
 mod case_fold;
 #[cfg(feature = "unicode-normalization")]
+mod canonicalize;
+#[cfg(feature = "unicode-normalization")]
 mod normalize;
 
 pub(crate) trait Char: Copy + Eq + Ord + fmt::Display {
@@ -120,7 +122,7 @@ impl Char for char {
         let mut case_fold = char_class == CharClass::Upper;
         #[cfg(feature = "unicode-normalization")]
         if config.normalize {
-            self = normalize::normalize(self);
+            self = normalize::normalize_latin(self);
             case_fold = true
         }
         #[cfg(feature = "unicode-casefold")]
@@ -136,7 +138,7 @@ impl Char for char {
     fn normalize(mut self, config: &Config) -> Self {
         #[cfg(feature = "unicode-normalization")]
         if config.normalize {
-            self = normalize::normalize(self);
+            self = normalize::normalize_latin(self);
         }
         #[cfg(feature = "unicode-casefold")]
         if config.ignore_case {
@@ -147,7 +149,11 @@ impl Char for char {
 }
 
 #[cfg(feature = "unicode-normalization")]
-pub use normalize::normalize;
+pub use normalize::normalize_latin;
+
+#[cfg(feature = "unicode-normalization")]
+pub use canonicalize::canonicalize_latin;
+
 #[cfg(feature = "unicode-segmentation")]
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -188,27 +194,15 @@ pub(crate) enum CharClass {
 /// Returns an iterator over single-codepoint representations of each grapheme in the provided
 /// text.
 ///
-/// For the most part, this is simply the first `char` of a grapheme. The main exception is the
-/// windows-style newline `\r\n`, which is normalized to the char `'\n'`.
+/// This iterates over graphemes and applies the [`canonicalize_latin`] function to each grapheme.
+/// Read its docs for more detail on what this function does.
 ///
-/// This workaround mainly exists since Nucleo cannot match graphemes as single units, so we
-/// must internally map each grapheme to a simpler in-memory representation. This method is used
-/// when constructing `Utf32Str(ing)`.
+/// We must perform this canonicalization since Nucleo cannot match graphemes as single units.
+/// Therefore, we internally map each grapheme to a simpler in-memory representation. This
+/// method is used when constructing `Utf32Str(ing)`.
 pub fn graphemes(text: &str) -> impl Iterator<Item = char> + '_ {
     #[cfg(feature = "unicode-segmentation")]
-    let res = text.graphemes(true).map(|grapheme| {
-        // we need to special-case this check since `\r\n` is a single grapheme and is
-        // therefore the exception to the rule that normalization of a grapheme should
-        // map to the first character.
-        if grapheme == "\r\n" {
-            '\n'
-        } else {
-            grapheme
-                .chars()
-                .next()
-                .expect("graphemes must be non-empty")
-        }
-    });
+    let res = text.graphemes(true).map(canonicalize_latin);
     #[cfg(not(feature = "unicode-segmentation"))]
     let res = text.chars();
     res

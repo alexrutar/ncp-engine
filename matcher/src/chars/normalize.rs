@@ -24,7 +24,7 @@
 /// assert_eq!(normalize('Æ'), 'Æ');
 /// assert_eq!(normalize('ữ'), 'u');
 /// ```
-pub fn normalize(c: char) -> char {
+pub fn normalize_latin(c: char) -> char {
     // outside checked blocks
     if c < '\u{a0}' || c >= '\u{20A0}' {
         return c;
@@ -898,7 +898,7 @@ mod tests {
     /// Helper function for test assertions.
     fn check_conversions(pairs: &[(char, char)]) {
         for (original, normalized) in pairs {
-            assert_eq!(normalize(*original), *normalized);
+            assert_eq!(normalize_latin(*original), *normalized);
         }
     }
 

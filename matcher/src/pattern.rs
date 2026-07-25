@@ -209,7 +209,7 @@ impl Atom {
                         match normalization {
                             #[cfg(feature = "unicode-normalization")]
                             Normalization::Smart => {
-                                normalize = normalize && chars::normalize(c) == c;
+                                normalize = normalize && chars::normalize_latin(c) == c;
                             }
                             Normalization::Never => (),
                         }
@@ -234,7 +234,7 @@ impl Atom {
                     match normalization {
                         #[cfg(feature = "unicode-normalization")]
                         Normalization::Smart => {
-                            normalize = normalize && chars::normalize(c) == c;
+                            normalize = normalize && chars::normalize_latin(c) == c;
                         }
                         Normalization::Never => (),
                     }
