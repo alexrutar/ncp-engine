@@ -184,21 +184,20 @@ impl<T> Vec<T> {
     }
 
     /// Extends the vector by appending multiple elements at once.
-    pub fn extend_exact<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
+    pub fn extend<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
     where
         I: IntoIterator<Item = T>,
-        <I as IntoIterator>::IntoIter: ExactSizeIterator,
     {
         let mut values = values.into_iter();
         let count: u32 = values
-            .len()
+            .size_hint()
+            .0
             .try_into()
             .expect("overflowed maximum capacity");
         if count == 0 {
-            assert!(
-                values.next().is_none(),
-                "The `values` variable reported incorrect length."
-            );
+            for value in values {
+                self.push(value, &fill_columns);
+            }
             return;
         }
 
@@ -236,11 +235,7 @@ impl<T> Vec<T> {
         // Route each value to its corresponding bucket
         let mut location;
         let count = count as usize;
-        for (i, v) in values.enumerate() {
-            // ExactSizeIterator is a safe trait that can have bugs/lie about it's size.
-            // Unsafe code cannot rely on the reported length being correct.
-            assert!(i < count);
-
+        for (i, v) in values.by_ref().take(count).enumerate() {
             location =
                 Location::of(start_index + u32::try_from(i).expect("overflowed maximum capacity"));
 
@@ -270,6 +265,10 @@ impl<T> Vec<T> {
                 (*entry).slot.get().write(MaybeUninit::new(v));
                 (*entry).active.store(true, Ordering::Release);
             }
+        }
+
+        for value in values {
+            self.push(value, &fill_columns);
         }
     }
 
@@ -706,7 +705,7 @@ mod tests {
     #[test]
     fn extend_unique_bucket() {
         let vec = Vec::<u32>::with_capacity(1, 1);
-        vec.extend_exact(0..10, |_, _| {});
+        vec.extend(0..10, |_, _| {});
         assert_eq!(vec.count(), 10);
         for i in 0..10 {
             assert_eq!(*vec.get(i).unwrap().data, i);
@@ -717,7 +716,7 @@ mod tests {
     #[test]
     fn extend_over_two_buckets() {
         let vec = Vec::<u32>::with_capacity(1, 1);
-        vec.extend_exact(0..100, |_, _| {});
+        vec.extend(0..100, |_, _| {});
         assert_eq!(vec.count(), 100);
         for i in 0..100 {
             assert_eq!(*vec.get(i).unwrap().data, i);
@@ -728,7 +727,7 @@ mod tests {
     #[test]
     fn extend_over_more_than_two_buckets() {
         let vec = Vec::<u32>::with_capacity(1, 1);
-        vec.extend_exact(0..1000, |_, _| {});
+        vec.extend(0..1000, |_, _| {});
         assert_eq!(vec.count(), 1000);
         for i in 0..1000 {
             assert_eq!(*vec.get(i).unwrap().data, i);
@@ -737,8 +736,19 @@ mod tests {
     }
 
     #[test]
-    /// test that ExactSizeIterator returning incorrect length is caught (0 AND more than reported)
-    fn extend_with_incorrect_reported_len_is_caught() {
+    fn extend_with_non_exact_size_hint() {
+        let vec = Vec::<u32>::with_capacity(1, 1);
+        vec.extend((0..10).filter(|value| value % 2 == 0), |_, _| {});
+        assert_eq!(vec.count(), 5);
+        for (index, value) in (0..10).filter(|value| value % 2 == 0).enumerate() {
+            assert_eq!(*vec.get(index as u32).unwrap().data, value);
+        }
+        assert!(vec.get(5).is_none());
+    }
+
+    #[test]
+    /// Test that an incorrect exact size hint is handled safely.
+    fn extend_with_incorrect_exact_size_hint() {
         struct IncorrectLenIter {
             len: usize,
             iter: std::ops::Range<u32>,
@@ -749,6 +759,10 @@ mod tests {
 
             fn next(&mut self) -> Option<Self::Item> {
                 self.iter.next()
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (self.len, Some(self.len))
             }
         }
 
@@ -763,17 +777,19 @@ mod tests {
             len: 10,
             iter: (0..12),
         };
-        // this should panic
-        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_err());
+        vec.extend(iter, |_, _| {});
+        assert_eq!(vec.count(), 12);
+        for i in 0..12 {
+            assert_eq!(*vec.get(i).unwrap().data, i);
+        }
 
         let vec = Vec::<u32>::with_capacity(1, 1);
         let iter = IncorrectLenIter {
             len: 12,
             iter: (0..10),
         };
-        // this shouldn't panic and should just ignore the extra elements
-        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_ok());
-        // we should reserve 12 elements but only 10 should be present
+        vec.extend(iter, |_, _| {});
+        // The reported lower bound is reserved, even if the iterator violates it.
         assert_eq!(vec.count(), 12);
         for i in 0..10 {
             assert_eq!(*vec.get(i).unwrap().data, i);
@@ -785,8 +801,10 @@ mod tests {
             len: 0,
             iter: (0..2),
         };
-        // this should panic
-        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_err());
+        vec.extend(iter, |_, _| {});
+        assert_eq!(vec.count(), 2);
+        assert_eq!(*vec.get(0).unwrap().data, 0);
+        assert_eq!(*vec.get(1).unwrap().data, 1);
     }
 
     // test |values| does not fit in the boxcar
@@ -796,6 +814,6 @@ mod tests {
         let vec = Vec::<u32>::with_capacity(1, 1);
         let count = MAX_ENTRIES as usize + 2;
         let iter = std::iter::repeat(0).take(count);
-        assert!(std::panic::catch_unwind(|| vec.extend_exact(iter, |_, _| {})).is_err());
+        assert!(std::panic::catch_unwind(|| vec.extend(iter, |_, _| {})).is_err());
     }
 }
