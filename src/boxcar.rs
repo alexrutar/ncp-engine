@@ -407,7 +407,33 @@ impl<'v, T> Iterator for Iter<'v, T> {
 impl<T> ExactSizeIterator for Iter<'_, T> {}
 impl<T> DoubleEndedIterator for Iter<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        unimplemented!()
+        if self.end == self.idx {
+            return None;
+        }
+
+        self.end -= 1;
+        let index = self.end;
+        let location = Location::of(index);
+        let entries = unsafe {
+            self.vec
+                .buckets
+                .get_unchecked(location.bucket as usize)
+                .entries
+                .load(Ordering::Relaxed)
+        };
+
+        if entries.is_null() {
+            return Some((index, None));
+        }
+
+        let entry = unsafe { Bucket::get(entries, location.entry, self.vec.columns) };
+        let entry = unsafe {
+            (*entry)
+                .active
+                .load(Ordering::Acquire)
+                .then(|| Entry::read(entry, self.vec.columns))
+        };
+        Some((index, entry))
     }
 }
 
@@ -738,6 +764,43 @@ mod tests {
 
         drop(vec);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn snapshot_iterates_from_both_ends() {
+        let vec = Vec::<u32>::with_capacity(0, 1);
+        vec.extend(0..100, |_, _| {});
+        let mut iter = unsafe { vec.snapshot(30) };
+
+        assert_eq!(iter.len(), 70);
+        assert_eq!(iter.next().map(|(index, _)| index), Some(30));
+        assert_eq!(iter.next_back().map(|(index, _)| index), Some(99));
+        assert_eq!(iter.next_back().map(|(index, _)| index), Some(98));
+        assert_eq!(iter.len(), 67);
+
+        let remaining = iter
+            .map(|(index, item)| (index, *item.unwrap().data))
+            .collect::<std::vec::Vec<_>>();
+        assert_eq!(
+            remaining,
+            (31..98)
+                .map(|index| (index, index))
+                .collect::<std::vec::Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn snapshot_yields_holes_from_the_back() {
+        let vec = Vec::<u32>::with_capacity(0, 1);
+        vec.inflight.store(100, Ordering::Relaxed);
+        let mut iter = unsafe { vec.snapshot(0) };
+
+        assert_eq!(
+            iter.next_back()
+                .map(|(index, item)| (index, item.is_none())),
+            Some((99, true))
+        );
+        assert_eq!(iter.len(), 99);
     }
 
     #[test]
