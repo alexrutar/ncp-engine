@@ -144,13 +144,6 @@ impl<T> Vec<T> {
         let index: u32 = index.try_into().expect("overflowed maximum capacity");
         let location = Location::of(index);
 
-        // eagerly allocate the next bucket if we are close to the end of this one
-        if index == (location.bucket_len - (location.bucket_len >> 3))
-            && let Some(next_bucket) = self.buckets.get(location.bucket as usize + 1)
-        {
-            Self::get_or_alloc(next_bucket, location.bucket_len << 1, self.columns);
-        }
-
         // safety: `location.bucket` is always in bounds
         let bucket = unsafe { self.buckets.get_unchecked(location.bucket as usize) };
         let mut entries = bucket.entries.load(Ordering::Acquire);
@@ -207,21 +200,13 @@ impl<T> Vec<T> {
             .fetch_add(u64::from(count), Ordering::Release)
             .try_into()
             .expect("overflowed maximum capacity");
+        let _end_index = start_index
+            .checked_add(count)
+            .filter(|&end| end <= MAX_ENTRIES)
+            .expect("overflowed maximum capacity");
 
-        // Compute first and last locations
+        // Compute the first location
         let start_location = Location::of(start_index);
-        let end_location = Location::of(start_index + count);
-
-        // Eagerly allocate the next bucket if the last entry is close to the end of its next bucket
-        let alloc_entry = end_location.alloc_next_bucket_entry();
-        if end_location.entry >= alloc_entry
-            && (start_location.bucket != end_location.bucket || start_location.entry <= alloc_entry)
-        {
-            // This might be the last bucket, hence the check
-            if let Some(next_bucket) = self.buckets.get(end_location.bucket as usize + 1) {
-                Self::get_or_alloc(next_bucket, end_location.bucket_len << 1, self.columns);
-            }
-        }
 
         let mut bucket = unsafe { self.buckets.get_unchecked(start_location.bucket as usize) };
         let mut entries = bucket.entries.load(Ordering::Acquire);
@@ -659,11 +644,6 @@ impl Location {
     fn bucket_len(bucket: u32) -> u32 {
         1 << (bucket + SKIP_BUCKET)
     }
-
-    /// The entry index at which the next bucket should be pre-allocated.
-    fn alloc_next_bucket_entry(&self) -> u32 {
-        self.bucket_len - (self.bucket_len >> 3)
-    }
 }
 
 #[cfg(test)]
@@ -733,6 +713,63 @@ mod tests {
             assert_eq!(*vec.get(i).unwrap().data, i);
         }
         assert!(vec.get(1000).is_none());
+    }
+
+    #[test]
+    fn buckets_are_allocated_on_demand() {
+        let pushed = Vec::<u32>::with_capacity(0, 1);
+        for value in 0..29 {
+            pushed.push(value, |_, _| {});
+        }
+        assert!(pushed.buckets[1].entries.load(Ordering::Relaxed).is_null());
+        for value in 29..33 {
+            pushed.push(value, |_, _| {});
+        }
+        assert!(!pushed.buckets[1].entries.load(Ordering::Relaxed).is_null());
+
+        let extended = Vec::<u32>::with_capacity(0, 1);
+        extended.extend(0..29, |_, _| {});
+        assert!(
+            extended.buckets[1]
+                .entries
+                .load(Ordering::Relaxed)
+                .is_null()
+        );
+        extended.extend(29..33, |_, _| {});
+        assert!(
+            !extended.buckets[1]
+                .entries
+                .load(Ordering::Relaxed)
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn concurrent_push_allocates_buckets_on_demand() {
+        const THREADS: u32 = 4;
+        const ITEMS_PER_THREAD: u32 = 500;
+
+        let vec = Vec::<u32>::with_capacity(0, 1);
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let vec = &vec;
+                scope.spawn(move || {
+                    for value in 0..ITEMS_PER_THREAD {
+                        vec.push(thread * ITEMS_PER_THREAD + value, |_, _| {});
+                    }
+                });
+            }
+        });
+
+        assert_eq!(vec.count(), THREADS * ITEMS_PER_THREAD);
+        let mut values = (0..vec.count())
+            .map(|index| *vec.get(index).unwrap().data)
+            .collect::<std::vec::Vec<_>>();
+        values.sort_unstable();
+        assert_eq!(
+            values,
+            (0..THREADS * ITEMS_PER_THREAD).collect::<std::vec::Vec<_>>()
+        );
     }
 
     #[test]
