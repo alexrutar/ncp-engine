@@ -134,7 +134,7 @@ impl<T> Vec<T> {
             let entry = Bucket::<T>::get(entries, location.entry, self.columns);
 
             // safety: the entry is active
-            (*entry).active.load(Ordering::Acquire).then(|| entry)
+            (*entry).active.load(Ordering::Acquire).then_some(entry)
         }
     }
 

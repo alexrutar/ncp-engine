@@ -409,12 +409,23 @@ impl From<String> for Utf32String {
     }
 }
 
-impl<'a> From<Cow<'a, str>> for Utf32String {
+impl From<Cow<'_, str>> for Utf32String {
     #[inline]
-    fn from(value: Cow<'a, str>) -> Self {
+    fn from(value: Cow<'_, str>) -> Self {
         match value {
             Cow::Borrowed(value) => value.into(),
             Cow::Owned(value) => value.into(),
+        }
+    }
+}
+
+impl From<Utf32Str<'_>> for Utf32String {
+    fn from(value: Utf32Str<'_>) -> Self {
+        match value {
+            Utf32Str::Ascii(items) => unsafe {
+                Utf32String::Ascii(std::str::from_utf8_unchecked(items).into())
+            },
+            Utf32Str::Unicode(items) => Utf32String::Unicode(items.into()),
         }
     }
 }
