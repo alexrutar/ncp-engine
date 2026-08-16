@@ -110,8 +110,8 @@ impl<T> Vec<T> {
         }
     }
 
-    /// Returns a reference to the element at the given index.
-    pub fn get(&self, index: u32) -> Option<Item<'_, T>> {
+    #[inline]
+    fn get_entry(&self, index: u32) -> Option<*mut Entry<T>> {
         let location = Location::of(index);
 
         unsafe {
@@ -131,10 +131,20 @@ impl<T> Vec<T> {
             let entry = Bucket::<T>::get(entries, location.entry, self.columns);
 
             // safety: the entry is active
-            (*entry)
-                .active
-                .load(Ordering::Acquire)
-                .then(|| Entry::read(entry, self.columns))
+            (*entry).active.load(Ordering::Acquire).then(|| entry)
+        }
+    }
+
+    /// Returns if the provided index is valid.
+    pub fn is_valid(&self, index: u32) -> bool {
+        self.get_entry(index).is_some()
+    }
+
+    /// Returns a reference to the element at the given index.
+    pub fn get(&self, index: u32) -> Option<Item<'_, T>> {
+        unsafe {
+            self.get_entry(index)
+                .map(|entry| Entry::read(entry, self.columns))
         }
     }
 

@@ -49,6 +49,60 @@ pub struct Item<'a, T> {
     pub matcher_columns: &'a [Utf32String],
 }
 
+/// A detached handle to a match candidate.
+///
+/// Unlike an [`Item`], which has a lifetime tied to the [`Snapshot`] or [`Injector`] from which it was
+/// created, a [`DetachedItem`] owns a handle to the underlying data and will persist even if the original
+/// [`Nucleo`] matcher has been dropped.
+///
+/// Similarly to an [injector](Injector), holding this handle will prevent the underlying data
+/// from being dropped. This handle is internally reference counted and can be cloned cheaply.
+///
+/// This handle implements [`PartialEq`] regardless of the value `T`. Equality is tested by checking that
+/// both items originate from the same matcher and that the internal indices are the same.
+pub struct DetachedItem<T> {
+    items: Arc<boxcar::Vec<T>>,
+    // this index is guaranteed to be valid for self.items
+    idx: u32,
+}
+
+impl<T> DetachedItem<T> {
+    unsafe fn new(items: &Arc<boxcar::Vec<T>>, idx: u32) -> Self {
+        Self {
+            items: Arc::clone(items),
+            idx,
+        }
+    }
+
+    /// Get the corresponding item.
+    pub fn item(&self) -> Item<'_, T> {
+        unsafe { self.items.get_unchecked(self.idx) }
+    }
+
+    /// Get the raw underlying index.
+    ///
+    /// This index is guaranteed to be valid for the snapshot or injector from which this
+    /// [`DetachedItem`] was originally constructed.
+    pub fn idx(&self) -> u32 {
+        self.idx
+    }
+}
+
+impl<T> PartialEq for DetachedItem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.idx == other.idx && Arc::ptr_eq(&self.items, &other.items)
+    }
+}
+
+impl<T> Clone for DetachedItem<T> {
+    fn clone(&self) -> Self {
+        Self {
+            items: Arc::clone(&self.items),
+            idx: self.idx,
+        }
+    }
+}
+
 /// A handle that allows adding new items to a [`Nucleo`] worker.
 ///
 /// An `Injector` is internally reference counted and can be cheaply
@@ -94,14 +148,14 @@ impl<T> Injector<T> {
         idx
     }
 
-    /// Appends multiple elements to the list of matched items.
-    /// This function is lock-free and wait-free.
+    /// Appends multiple elements to the list of matched items. This function is lock-free
+    /// and wait-free.
     ///
     /// You should favor this function over `push` if at least one of the following is true:
-    /// - the number of items you're adding can be computed beforehand and is typically larger
+    /// - The number of items you're adding can be computed beforehand and is typically larger
     ///   than 1k
-    /// - you're able to batch incoming items
-    /// - you're adding items from multiple threads concurrently (this function results in less
+    /// - You're able to batch incoming items
+    /// - You're adding items from multiple threads concurrently (this function results in less
     ///   contention)
     pub fn extend<I>(&self, values: I, fill_columns: impl Fn(&T, &mut [Utf32String]))
     where
@@ -120,6 +174,12 @@ impl<T> Injector<T> {
     }
 
     /// Returns a reference to the item at the given index.
+    #[inline]
+    pub fn get_item(&self, index: u32) -> Option<Item<'_, T>> {
+        self.items.get(index)
+    }
+
+    /// Returns a reference to the item at the given index without checking that the index is valid.
     ///
     /// # Safety
     ///
@@ -127,13 +187,30 @@ impl<T> Injector<T> {
     /// `push` returning this value or `get` returning `Some` for this value.
     /// Just because a later index is initialized doesn't mean that this index
     /// is initialized
-    pub unsafe fn get_unchecked(&self, index: u32) -> Item<'_, T> {
+    #[inline]
+    pub unsafe fn get_item_unchecked(&self, index: u32) -> Item<'_, T> {
         unsafe { self.items.get_unchecked(index) }
     }
 
-    /// Returns a reference to the element at the given index.
-    pub fn get(&self, index: u32) -> Option<Item<'_, T>> {
-        self.items.get(index)
+    /// Returns the detached item at the given index.
+    #[inline]
+    pub fn get_detached_item(&self, index: u32) -> Option<DetachedItem<T>> {
+        self.items
+            .is_valid(index)
+            .then(|| unsafe { DetachedItem::new(&self.items, index) })
+    }
+
+    /// Returns the detached item at the given index without checking that the index is valid.
+    ///
+    /// # Safety
+    ///
+    /// Item at `index` must be initialized. That means you must have observed
+    /// `push` returning this value or `get` returning `Some` for this value.
+    /// Just because a later index is initialized doesn't mean that this index
+    /// is initialized
+    #[inline]
+    pub unsafe fn get_detached_item_unchecked(&self, index: u32) -> DetachedItem<T> {
+        unsafe { DetachedItem::new(&self.items, index) }
     }
 }
 
@@ -145,7 +222,7 @@ pub struct Match {
     /// The index of the match.
     ///
     /// The index is guaranteed to correspond to a valid item within the matcher and within the
-    /// same snapshot. Note that indices are invalidated of the matcher engine has been
+    /// same snapshot. Note that indices are invalidated if the matcher engine has been
     /// [restarted](Nucleo::restart).
     pub idx: u32,
 }
@@ -227,6 +304,17 @@ impl<T: Sync + Send + 'static> Snapshot<T> {
 
     /// Returns a reference to the item at the given index.
     ///
+    /// Returns `None` if the given `index` is not initialized. This function
+    /// is only guarteed to return `Some` for item indices that can be found in
+    /// the `matches` of this struct. Both smaller and larger indices may return
+    /// `None`.
+    #[inline]
+    pub fn get_item(&self, index: u32) -> Option<Item<'_, T>> {
+        self.items.get(index)
+    }
+
+    /// Returns a reference to the item at the given index.
+    ///
     /// # Safety
     ///
     /// Item at `index` must be initialized. That means you must have observed a
@@ -238,15 +326,25 @@ impl<T: Sync + Send + 'static> Snapshot<T> {
         unsafe { self.items.get_unchecked(index) }
     }
 
-    /// Returns a reference to the item at the given index.
-    ///
-    /// Returns `None` if the given `index` is not initialized. This function
-    /// is only guarteed to return `Some` for item indices that can be found in
-    /// the `matches` of this struct. Both smaller and larger indices may return
-    /// `None`.
+    /// Returns the detached item at the given index.
     #[inline]
-    pub fn get_item(&self, index: u32) -> Option<Item<'_, T>> {
-        self.items.get(index)
+    pub fn get_detached_item(&self, index: u32) -> Option<DetachedItem<T>> {
+        self.items
+            .is_valid(index)
+            .then(|| unsafe { DetachedItem::new(&self.items, index) })
+    }
+
+    /// Returns the detached item at the given index without checking that the index is valid.
+    ///
+    /// # Safety
+    ///
+    /// Item at `index` must be initialized. That means you must have observed
+    /// `push` returning this value or `get` returning `Some` for this value.
+    /// Just because a later index is initialized doesn't mean that this index
+    /// is initialized
+    #[inline]
+    pub unsafe fn get_detached_item_unchecked(&self, index: u32) -> DetachedItem<T> {
+        unsafe { DetachedItem::new(&self.items, index) }
     }
 
     /// Returns the matches corresponding to this snapshot.
@@ -264,6 +362,17 @@ impl<T: Sync + Send + 'static> Snapshot<T> {
         // SAFETY: A match index is guaranteed to corresponding to a valid global index in this
         // snapshot.
         unsafe { Some(self.get_item_unchecked(self.matches.get(n as usize)?.idx)) }
+    }
+
+    /// A convenience function to return the [`DetachedItem`] corresponding to the
+    /// `n`th match.
+    ///
+    /// Returns `None` if `n` is greater than or equal to the match count.
+    #[inline]
+    pub fn get_matched_detached_item(&self, n: u32) -> Option<DetachedItem<T>> {
+        // SAFETY: A match index is guaranteed to corresponding to a valid global index in this
+        // snapshot.
+        unsafe { Some(self.get_detached_item_unchecked(self.matches.get(n as usize)?.idx)) }
     }
 }
 
@@ -432,7 +541,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
 
     /// Restart the the item stream. Removes all items and disconnects all
     /// previously created injectors from this instance. If `clear_snapshot`
-    /// is `true` then all items and matched are removed from the [`Snapshot`]
+    /// is `true` then all items and matches are removed from the [`Snapshot`]
     /// immediately. Otherwise the snapshot will keep the current matches until
     /// the matcher has run again.
     ///
@@ -440,7 +549,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     ///
     /// The injectors will continue to function but they will not affect this
     /// instance anymore. The old items will only be dropped when all injectors
-    /// were dropped.
+    /// and detached items are dropped.
     pub fn restart(&mut self, clear_snapshot: bool) {
         self.canceled.store(true, Ordering::Relaxed);
         self.items = Arc::new(boxcar::Vec::with_capacity(1024, self.items.columns()));
@@ -473,7 +582,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     /// This is the main way to interact with the matcher, and should be called
     /// regularly (for example each time a frame is rendered). To avoid excessive
     /// redraws this method will wait `timeout` milliseconds for the
-    /// worker thread to finish. It is recommend to set the timeout to 10ms.
+    /// worker threads to finish. It is recommend to set the timeout to 10ms.
     pub fn tick(&mut self, timeout: u64) -> Status {
         self.should_notify.store(false, atomic::Ordering::Relaxed);
         let status = self.pattern.status();
