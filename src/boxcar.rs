@@ -26,8 +26,13 @@ use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::{ptr, slice};
+
+#[cfg(not(target_has_atomic = "64"))]
+use std::sync::atomic::AtomicU32 as Inflight;
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64 as Inflight;
 
 use crate::{Item, Utf32String};
 
@@ -40,7 +45,7 @@ pub(crate) struct Vec<T> {
     ///
     /// this value may be more than the true length as it will
     /// be incremented before values are actually stored.
-    inflight: AtomicU64,
+    inflight: Inflight,
     /// buckets of length 32, 64 .. 2^31
     buckets: [Bucket<T>; BUCKETS as usize],
     /// the number of matcher columns in this vector, its absolutely critical that
@@ -67,7 +72,7 @@ impl<T> Vec<T> {
 
         Self {
             buckets: buckets.map(Bucket::new),
-            inflight: AtomicU64::new(0),
+            inflight: Inflight::new(0),
             columns,
             _marker: PhantomData,
         }
@@ -79,9 +84,7 @@ impl<T> Vec<T> {
     /// Returns the number of elements in the vector.
     #[inline]
     pub fn count(&self) -> u32 {
-        self.inflight
-            .load(Ordering::Acquire)
-            .min(MAX_ENTRIES as u64) as u32
+        self.inflight_count(Ordering::Acquire)
     }
 
     // Returns a reference to the element at the given index.
@@ -150,9 +153,7 @@ impl<T> Vec<T> {
 
     /// Appends an element to the back of the vector.
     pub fn push(&self, value: T, fill_columns: impl FnOnce(&T, &mut [Utf32String])) -> u32 {
-        let index = self.inflight.fetch_add(1, Ordering::Release);
-        // the inflight counter is a `u64` to catch overflows of the vector'scapacity
-        let index: u32 = index.try_into().expect("overflowed maximum capacity");
+        let index = self.reserve(1);
         let location = Location::of(index);
 
         // safety: `location.bucket` is always in bounds
@@ -213,11 +214,7 @@ impl<T> Vec<T> {
             let count = remaining.min(RESERVATION_CHUNK_SIZE);
 
             // Reserve this chunk's indices at once.
-            let start_index: u32 = self
-                .inflight
-                .fetch_add(u64::from(count), Ordering::Release)
-                .try_into()
-                .expect("overflowed maximum capacity");
+            let start_index = self.reserve(count);
             let _end_index = start_index
                 .checked_add(count)
                 .filter(|&end| end <= MAX_ENTRIES)
@@ -274,6 +271,33 @@ impl<T> Vec<T> {
         }
     }
 
+    #[cfg(target_has_atomic = "64")]
+    fn reserve(&self, count: u32) -> u32 {
+        self.inflight
+            .fetch_add(u64::from(count), Ordering::Release)
+            .try_into()
+            .expect("overflowed maximum capacity")
+    }
+
+    #[cfg(not(target_has_atomic = "64"))]
+    fn reserve(&self, count: u32) -> u32 {
+        self.inflight
+            .try_update(Ordering::Release, Ordering::Relaxed, |current| {
+                current.checked_add(count).filter(|&end| end <= MAX_ENTRIES)
+            })
+            .expect("overflowed maximum capacity")
+    }
+
+    #[cfg(target_has_atomic = "64")]
+    fn inflight_count(&self, ordering: Ordering) -> u32 {
+        self.inflight.load(ordering).min(u64::from(MAX_ENTRIES)) as u32
+    }
+
+    #[cfg(not(target_has_atomic = "64"))]
+    fn inflight_count(&self, ordering: Ordering) -> u32 {
+        self.inflight.load(ordering)
+    }
+
     /// race to initialize a bucket
     fn get_or_alloc(bucket: &Bucket<T>, len: u32, cols: u32) -> *mut Entry<T> {
         let entries = unsafe { Bucket::alloc(len, cols) };
@@ -295,10 +319,7 @@ impl<T> Vec<T> {
     /// the iterator is deterministically sized and will not grow
     /// as more elements are pushed
     pub unsafe fn snapshot(&self, start: u32) -> Iter<'_, T> {
-        let end = self
-            .inflight
-            .load(Ordering::Acquire)
-            .min(MAX_ENTRIES as u64) as u32;
+        let end = self.inflight_count(Ordering::Acquire);
         assert!(start <= end, "index {start} is out of bounds!");
         Iter {
             location: Location::of(start),
@@ -312,10 +333,7 @@ impl<T> Vec<T> {
     /// the iterator is deterministically sized and will not grow
     /// as more elements are pushed
     pub unsafe fn par_snapshot(&self, start: u32) -> ParIter<'_, T> {
-        let end = self
-            .inflight
-            .load(Ordering::Acquire)
-            .min(MAX_ENTRIES as u64) as u32;
+        let end = self.inflight_count(Ordering::Acquire);
         assert!(start <= end, "index {start} is out of bounds!");
 
         ParIter {
@@ -370,7 +388,7 @@ impl<'v, T> Iterator for Iter<'v, T> {
             return None;
         }
         debug_assert!(self.idx < self.end, "huh {} {}", self.idx, self.end);
-        debug_assert!(self.end as u64 <= self.vec.inflight.load(Ordering::Relaxed));
+        debug_assert!(self.end <= self.vec.inflight_count(Ordering::Relaxed));
 
         loop {
             let entries = unsafe {
