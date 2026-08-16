@@ -24,6 +24,7 @@
 use std::alloc::Layout;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::{ptr, slice};
@@ -46,6 +47,8 @@ pub(crate) struct Vec<T> {
     /// this remains constant and after initilaziaton (safety invariant) since
     /// it is used to calculate the Entry layout
     columns: u32,
+    /// We own values of `T` even though the pointers are atomic.
+    _marker: PhantomData<T>,
 }
 
 impl<T> Vec<T> {
@@ -69,6 +72,7 @@ impl<T> Vec<T> {
             buckets: buckets.map(Bucket::new),
             inflight: AtomicU64::new(0),
             columns,
+            _marker: PhantomData,
         }
     }
     pub fn columns(&self) -> u32 {
@@ -315,7 +319,8 @@ impl<T> Drop for Vec<T> {
             let entries = *bucket.entries.get_mut();
 
             if entries.is_null() {
-                break;
+                // Concurrent pushes can allocate a later bucket before an earlier one.
+                continue;
             }
 
             let len = Location::bucket_len(i as u32);
@@ -494,8 +499,11 @@ struct Bucket<T> {
 
 impl<T> Bucket<T> {
     fn layout(len: u32, layout: Layout) -> Layout {
-        Layout::from_size_align(layout.size() * len as usize, layout.align())
-            .expect("exceeded maximum allocation size")
+        let size = layout
+            .size()
+            .checked_mul(len as usize)
+            .expect("exceeded maximum allocation size");
+        Layout::from_size_align(size, layout.align()).expect("exceeded maximum allocation size")
     }
 
     unsafe fn alloc(len: u32, cols: u32) -> *mut Entry<T> {
@@ -649,6 +657,52 @@ impl Location {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    #[should_panic(expected = "exceeded maximum allocation size")]
+    fn bucket_layout_rejects_size_overflow() {
+        let layout = Layout::from_size_align(isize::MAX as usize, 1).unwrap();
+        Bucket::<()>::layout(3, layout);
+    }
+
+    #[test]
+    fn vec_is_send_and_sync_when_its_items_are() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Vec<u32>>();
+    }
+
+    #[test]
+    fn drop_deallocates_buckets_after_allocation_gaps() {
+        struct CountDrops<'a>(&'a AtomicUsize);
+
+        impl Drop for CountDrops<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let drops = AtomicUsize::new(0);
+        let mut vec = Vec::<CountDrops<'_>>::with_capacity(0, 1);
+        let bucket = &mut vec.buckets[2];
+        let entries = unsafe { Bucket::alloc(Location::bucket_len(2), vec.columns) };
+        *bucket.entries.get_mut() = entries;
+
+        unsafe {
+            let entry = Bucket::get(entries, 0, vec.columns);
+            for col in Entry::matcher_cols_raw(entry, vec.columns) {
+                col.get().write(MaybeUninit::new(Utf32String::default()));
+            }
+            (*entry)
+                .slot
+                .get()
+                .write(MaybeUninit::new(CountDrops(&drops)));
+            *(*entry).active.get_mut() = true;
+        }
+
+        drop(vec);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn location() {
