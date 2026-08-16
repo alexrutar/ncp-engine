@@ -185,75 +185,81 @@ impl<T> Vec<T> {
     where
         I: IntoIterator<Item = T>,
     {
+        const RESERVATION_CHUNK_SIZE: u32 = 8192;
+
         let mut values = values.into_iter();
-        let count: u32 = values
+        let mut remaining: u32 = values
             .size_hint()
             .0
             .try_into()
+            .ok()
+            .filter(|&count| count <= MAX_ENTRIES)
             .expect("overflowed maximum capacity");
-        if count == 0 {
+        if remaining == 0 {
             for value in values {
                 self.push(value, &fill_columns);
             }
             return;
         }
 
-        // Reserve all indices at once
-        let start_index: u32 = self
-            .inflight
-            .fetch_add(u64::from(count), Ordering::Release)
-            .try_into()
-            .expect("overflowed maximum capacity");
-        let _end_index = start_index
-            .checked_add(count)
-            .filter(|&end| end <= MAX_ENTRIES)
-            .expect("overflowed maximum capacity");
+        while remaining != 0 {
+            let count = remaining.min(RESERVATION_CHUNK_SIZE);
 
-        // Compute the first location
-        let start_location = Location::of(start_index);
+            // Reserve this chunk's indices at once.
+            let start_index: u32 = self
+                .inflight
+                .fetch_add(u64::from(count), Ordering::Release)
+                .try_into()
+                .expect("overflowed maximum capacity");
+            let _end_index = start_index
+                .checked_add(count)
+                .filter(|&end| end <= MAX_ENTRIES)
+                .expect("overflowed maximum capacity");
 
-        let mut bucket = unsafe { self.buckets.get_unchecked(start_location.bucket as usize) };
-        let mut entries = bucket.entries.load(Ordering::Acquire);
-        if entries.is_null() {
-            entries = Self::get_or_alloc(
-                bucket,
-                Location::bucket_len(start_location.bucket),
-                self.columns,
-            );
-        }
-        // Route each value to its corresponding bucket
-        let mut location;
-        let count = count as usize;
-        for (i, v) in values.by_ref().take(count).enumerate() {
-            location =
-                Location::of(start_index + u32::try_from(i).expect("overflowed maximum capacity"));
-
-            // if we're starting to insert into a different bucket, allocate it beforehand
-            if location.entry == 0 && i != 0 {
-                // safety: `location.bucket` is always in bounds
-                bucket = unsafe { self.buckets.get_unchecked(location.bucket as usize) };
-                entries = bucket.entries.load(Ordering::Acquire);
-
-                if entries.is_null() {
-                    entries = Self::get_or_alloc(
-                        bucket,
-                        Location::bucket_len(location.bucket),
-                        self.columns,
-                    );
-                }
+            let start_location = Location::of(start_index);
+            let mut bucket = unsafe { self.buckets.get_unchecked(start_location.bucket as usize) };
+            let mut entries = bucket.entries.load(Ordering::Acquire);
+            if entries.is_null() {
+                entries = Self::get_or_alloc(bucket, start_location.bucket_len, self.columns);
             }
 
-            unsafe {
-                let entry = Bucket::get(entries, location.entry, self.columns);
+            let mut inserted = 0;
+            for (i, v) in values.by_ref().take(count as usize).enumerate() {
+                let location = Location::of(
+                    start_index + u32::try_from(i).expect("overflowed maximum capacity"),
+                );
 
-                // Initialize matcher columns
-                for col in Entry::matcher_cols_raw(entry, self.columns) {
-                    col.get().write(MaybeUninit::new(Utf32String::default()));
+                // If we're starting to insert into a different bucket, allocate it beforehand.
+                if location.entry == 0 && i != 0 {
+                    // safety: `location.bucket` is always in bounds
+                    bucket = unsafe { self.buckets.get_unchecked(location.bucket as usize) };
+                    entries = bucket.entries.load(Ordering::Acquire);
+
+                    if entries.is_null() {
+                        entries = Self::get_or_alloc(bucket, location.bucket_len, self.columns);
+                    }
                 }
-                fill_columns(&v, Entry::matcher_cols_mut(entry, self.columns));
-                (*entry).slot.get().write(MaybeUninit::new(v));
-                (*entry).active.store(true, Ordering::Release);
+
+                unsafe {
+                    let entry = Bucket::get(entries, location.entry, self.columns);
+
+                    // Initialize matcher columns
+                    for col in Entry::matcher_cols_raw(entry, self.columns) {
+                        col.get().write(MaybeUninit::new(Utf32String::default()));
+                    }
+                    fill_columns(&v, Entry::matcher_cols_mut(entry, self.columns));
+                    (*entry).slot.get().write(MaybeUninit::new(v));
+                    (*entry).active.store(true, Ordering::Release);
+                }
+
+                inserted += 1;
             }
+
+            if inserted != count {
+                return;
+            }
+
+            remaining -= count;
         }
 
         for value in values {
@@ -761,12 +767,12 @@ mod tests {
     #[test]
     fn extend_over_more_than_two_buckets() {
         let vec = Vec::<u32>::with_capacity(1, 1);
-        vec.extend(0..1000, |_, _| {});
-        assert_eq!(vec.count(), 1000);
-        for i in 0..1000 {
+        vec.extend(0..20_000, |_, _| {});
+        assert_eq!(vec.count(), 20_000);
+        for i in 0..20_000 {
             assert_eq!(*vec.get(i).unwrap().data, i);
         }
-        assert!(vec.get(1000).is_none());
+        assert!(vec.get(20_000).is_none());
     }
 
     #[test]
@@ -896,6 +902,18 @@ mod tests {
         assert_eq!(vec.count(), 2);
         assert_eq!(*vec.get(0).unwrap().data, 0);
         assert_eq!(*vec.get(1).unwrap().data, 1);
+
+        let vec = Vec::<u32>::with_capacity(1, 1);
+        let iter = IncorrectLenIter {
+            len: 20_000,
+            iter: (0..10),
+        };
+        vec.extend(iter, |_, _| {});
+        assert_eq!(vec.count(), 8192);
+        for i in 0..10 {
+            assert_eq!(*vec.get(i).unwrap().data, i);
+        }
+        assert!(vec.get(10).is_none());
     }
 
     // test |values| does not fit in the boxcar
