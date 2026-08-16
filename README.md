@@ -9,3 +9,11 @@ This fork branched at commit hash `5b74652e482f7c07d827f18c6d21e7540c242c69`.
 The current differences are:
 - Updated dependencies and migrated to 2024 edition
 - Reverted commit `61f2a4e48270174dd3789485b2991fbc0a32fbc8`, so we do not sort results on the empty pattern
+- Renamed `Injector::extend_exact` to `Injector::extend`; it now accepts any iterator.
+  The new implementation uses `size_hint` internally.
+- `Injector::get` and `Injector::get_unchecked` were renamed to `Injector::get_item` and `Injector::get_item_unchecked`.
+- `ncp_matcher::chars::normalize` was renamed to `normalize_latin`.
+- Added `DetachedItem`, an owned, cheaply cloneable item handle.
+- Added conversion from `Utf32Str` to `Utf32String`.
+- Removed the `Send + Sync + 'static` bounds from the `Nucleo` and `Snapshot` type declarations.
+- Added support for targets with 32-bit atomics but no 64-bit atomics.
