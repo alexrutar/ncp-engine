@@ -15,6 +15,13 @@ ncp-matcher = { version = "0.1.2", path = "matcher", package = "ncp-matcher" }
 parking_lot = { version = "0.12.5", features = ["send_guard", "arc_lock"] }
 rayon = "1.11.0"
 
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "insertion"
+harness = false
+
 [workspace]
 members = ["matcher"]
 
