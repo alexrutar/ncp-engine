@@ -161,7 +161,7 @@ pub struct Status {
 
 /// A representation of the results of a [`Nucleo`] worker after finishing a
 /// [`tick`](Nucleo::tick).
-pub struct Snapshot<T: Sync + Send + 'static> {
+pub struct Snapshot<T> {
     item_count: u32,
     matches: Vec<Match>,
     pattern: MultiPattern,
@@ -325,7 +325,7 @@ impl State {
 ///     });
 /// });
 /// ```
-pub struct Nucleo<T: Sync + Send + 'static> {
+pub struct Nucleo<T> {
     // the way the API is build we totally don't actually need these to be Arcs
     // but this lets us avoid some unsafe
     canceled: Arc<AtomicBool>,
@@ -531,7 +531,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     }
 }
 
-impl<T: Sync + Send> Drop for Nucleo<T> {
+impl<T> Drop for Nucleo<T> {
     fn drop(&mut self) {
         // we ensure the worker quits before dropping items to ensure that
         // the worker can always assume the items outlive it

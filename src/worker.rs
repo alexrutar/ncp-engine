@@ -46,7 +46,7 @@ impl Matchers {
 unsafe impl Sync for Matchers {}
 unsafe impl Send for Matchers {}
 
-pub(crate) struct Worker<T: Sync + Send + 'static> {
+pub(crate) struct Worker<T> {
     pub(crate) running: bool,
     matchers: Matchers,
     pub(crate) matches: Vec<Match>,

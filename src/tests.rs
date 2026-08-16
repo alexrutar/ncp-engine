@@ -1,8 +1,18 @@
 use std::sync::Arc;
+use std::{rc::Rc, sync::MutexGuard};
 
 use ncp_matcher::Config;
 
 use crate::Nucleo;
+
+#[test]
+fn nucleo_type_does_not_require_thread_safe_items() {
+    fn accepts_non_send(_: Option<Nucleo<Rc<()>>>) {}
+    fn accepts_non_static<'a>(_: Option<Nucleo<MutexGuard<'a, ()>>>) {}
+
+    accepts_non_send(None);
+    accepts_non_static(None);
+}
 
 #[test]
 fn active_injector_count() {
