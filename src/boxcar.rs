@@ -55,17 +55,14 @@ impl<T> Vec<T> {
     /// Constructs a new, empty `Vec<T>` with the specified capacity and matcher columns.
     pub fn with_capacity(capacity: u32, columns: u32) -> Self {
         assert_ne!(columns, 0, "there must be atleast one matcher column");
-        let init = match capacity {
-            0 => 0,
-            // initialize enough buckets for `capacity` elements
-            n => Location::of(n).bucket,
-        };
-
         let mut buckets = [ptr::null_mut(); BUCKETS as usize];
 
-        for (i, bucket) in buckets[..=init as usize].iter_mut().enumerate() {
-            let len = Location::bucket_len(i as u32);
-            *bucket = unsafe { Bucket::alloc(len, columns) };
+        if let Some(last_index) = capacity.checked_sub(1) {
+            let last_bucket = Location::of(last_index).bucket;
+            for (i, bucket) in buckets[..=last_bucket as usize].iter_mut().enumerate() {
+                let len = Location::bucket_len(i as u32);
+                *bucket = unsafe { Bucket::alloc(len, columns) };
+            }
         }
 
         Self {
@@ -676,6 +673,39 @@ mod tests {
     fn vec_is_send_and_sync_when_its_items_are() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Vec<u32>>();
+    }
+
+    #[test]
+    fn capacity_allocates_only_required_buckets() {
+        let empty = Vec::<u32>::with_capacity(0, 1);
+        assert!(
+            empty
+                .buckets
+                .iter()
+                .all(|bucket| bucket.entries.load(Ordering::Relaxed).is_null())
+        );
+
+        let first_bucket = Vec::<u32>::with_capacity(32, 1);
+        assert!(
+            !first_bucket.buckets[0]
+                .entries
+                .load(Ordering::Relaxed)
+                .is_null()
+        );
+        assert!(
+            first_bucket.buckets[1]
+                .entries
+                .load(Ordering::Relaxed)
+                .is_null()
+        );
+
+        let second_bucket = Vec::<u32>::with_capacity(33, 1);
+        assert!(
+            !second_bucket.buckets[1]
+                .entries
+                .load(Ordering::Relaxed)
+                .is_null()
+        );
     }
 
     #[test]
