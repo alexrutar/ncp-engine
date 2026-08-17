@@ -19,10 +19,10 @@
 ///
 /// # Example
 /// ```
-/// # use ncp_matcher::chars::normalize;
-/// assert_eq!(normalize('ä'), 'a');
-/// assert_eq!(normalize('Æ'), 'Æ');
-/// assert_eq!(normalize('ữ'), 'u');
+/// # use ncp_matcher::chars::normalize_latin;
+/// assert_eq!(normalize_latin('ä'), 'a');
+/// assert_eq!(normalize_latin('Æ'), 'Æ');
+/// assert_eq!(normalize_latin('ữ'), 'u');
 /// ```
 pub fn normalize_latin(c: char) -> char {
     // outside checked blocks
