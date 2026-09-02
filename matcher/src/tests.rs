@@ -260,6 +260,19 @@ fn empty_needle() {
 #[test]
 fn test_substring() {
     assert_matches(
+        &[Substring],
+        false,
+        false,
+        false,
+        false,
+        &[(
+            "x12A",
+            "12a",
+            &[1, 2, 3],
+            BONUS_CAMEL123 * (BONUS_FIRST_CHAR_MULTIPLIER + 2),
+        )],
+    );
+    assert_matches(
         &[Substring, Prefix],
         false,
         false,
