@@ -161,14 +161,19 @@ impl<T: Sync + Send + 'static> Worker<T> {
     }
 
     fn remove_in_flight_matches(&mut self) {
-        let mut off = 0;
-        self.in_flight.retain(|&i| {
-            let is_in_flight = self.items.get(i).is_none();
-            if is_in_flight {
-                self.matches.remove((i - off) as usize);
-                off += 1;
+        // in-flight indices are collected by parallel workers, so insertion
+        // order is not deterministic
+        self.in_flight.sort_unstable();
+        self.in_flight.retain(|&i| self.items.get(i).is_none());
+
+        let mut in_flight = self.in_flight.iter().copied().peekable();
+        self.matches.retain(|match_| {
+            if in_flight.peek().copied() == Some(match_.idx) {
+                in_flight.next();
+                false
+            } else {
+                true
             }
-            is_in_flight
         });
     }
 
