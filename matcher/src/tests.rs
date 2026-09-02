@@ -388,6 +388,27 @@ fn test_substring() {
             ),
         ],
     );
+    assert_matches(
+        &[Substring],
+        false,
+        false,
+        false,
+        false,
+        &[
+            (
+                "x你x 你",
+                "你",
+                &[4],
+                BONUS_BOUNDARY_WHITE * BONUS_FIRST_CHAR_MULTIPLIER,
+            ),
+            (
+                "x你好x 你好",
+                "你好",
+                &[5, 6],
+                BONUS_BOUNDARY_WHITE * (BONUS_FIRST_CHAR_MULTIPLIER + 1),
+            ),
+        ],
+    );
     assert_not_matches_with(
         true,
         false,

@@ -201,6 +201,7 @@ impl Matcher {
         for (i, &c) in haystack[start..].iter().enumerate() {
             let (c, char_class) = c.char_class_and_normalize(&self.config);
             if c != needle {
+                prev_class = char_class;
                 continue;
             }
             let bonus = self.config.bonus_for(prev_class, char_class);
@@ -243,6 +244,7 @@ impl Matcher {
         for (i, &c) in haystack[start..=end].iter().enumerate() {
             let (c, char_class) = c.char_class_and_normalize(&self.config);
             if c != needle[0] {
+                prev_class = char_class;
                 continue;
             }
             let bonus = self.config.bonus_for(prev_class, char_class);
