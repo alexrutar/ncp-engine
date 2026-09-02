@@ -614,16 +614,24 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
             worker
         };
 
-        let changed = inner.running;
+        let pending_update = inner.needs_rescore || inner.needs_sort;
+        let changed = inner.running && !pending_update;
 
-        let running = canceled || self.items.count() > inner.item_count();
+        let running = canceled || pending_update || self.items.count() > inner.item_count();
         if inner.running {
             inner.running = false;
-            if !inner.was_canceled && !self.state.canceled() {
+            if !inner.was_canceled && !self.state.canceled() && !pending_update {
                 self.snapshot.update(&inner);
             }
         }
         if running {
+            let status = if inner.needs_rescore {
+                pattern::Status::Rescore
+            } else {
+                status
+            };
+            inner.needs_rescore = false;
+            inner.needs_sort = false;
             inner.pattern.clone_from(&self.pattern);
             self.canceled.store(false, atomic::Ordering::Relaxed);
             if !canceled {

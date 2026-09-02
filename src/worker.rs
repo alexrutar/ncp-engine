@@ -53,6 +53,8 @@ pub(crate) struct Worker<T> {
     pub(crate) pattern: MultiPattern,
     pub(crate) sort_results: bool,
     pub(crate) reverse_items: bool,
+    pub(crate) needs_rescore: bool,
+    pub(crate) needs_sort: bool,
     pub(crate) canceled: Arc<AtomicBool>,
     pub(crate) should_notify: Arc<AtomicBool>,
     pub(crate) was_canceled: bool,
@@ -70,12 +72,19 @@ impl<T: Sync + Send + 'static> Worker<T> {
         for matcher in self.matchers.0.iter_mut() {
             matcher.get_mut().config = config.clone();
         }
+        self.needs_rescore = true;
     }
     pub(crate) fn sort_results(&mut self, sort_results: bool) {
-        self.sort_results = sort_results;
+        if self.sort_results != sort_results {
+            self.sort_results = sort_results;
+            self.needs_sort = true;
+        }
     }
     pub(crate) fn reverse_items(&mut self, reverse_items: bool) {
-        self.reverse_items = reverse_items;
+        if self.reverse_items != reverse_items {
+            self.reverse_items = reverse_items;
+            self.needs_sort = true;
+        }
     }
 
     pub(crate) fn new(
@@ -105,6 +114,8 @@ impl<T: Sync + Send + 'static> Worker<T> {
             pattern: MultiPattern::new(cols as usize),
             sort_results: match_config.sort_results,
             reverse_items: match_config.reverse_items,
+            needs_rescore: false,
+            needs_sort: false,
             canceled: Arc::new(AtomicBool::new(false)),
             should_notify: Arc::new(AtomicBool::new(false)),
             was_canceled: false,

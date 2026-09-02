@@ -4,6 +4,11 @@ use std::{rc::Rc, sync::MutexGuard};
 use ncp_matcher::Config;
 
 use crate::Nucleo;
+use crate::pattern::{CaseMatching, Normalization};
+
+fn wait_for_worker(nucleo: &mut Nucleo<String>) {
+    while nucleo.tick(100).running {}
+}
 
 #[test]
 fn nucleo_type_does_not_require_thread_safe_items() {
@@ -34,4 +39,41 @@ fn active_injector_count() {
     assert_eq!(nucleo.active_injectors(), 1);
     drop(injector3);
     assert_eq!(nucleo.active_injectors(), 0);
+}
+
+#[test]
+fn configuration_changes_schedule_worker_updates() {
+    let mut nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| ()), Some(1), 1);
+    let injector = nucleo.injector();
+    injector.push("xab".to_owned(), |item, columns| {
+        columns[0] = item.as_str().into();
+    });
+    injector.push("xxab".to_owned(), |item, columns| {
+        columns[0] = item.as_str().into();
+    });
+    nucleo
+        .pattern
+        .reparse(0, "ab", CaseMatching::Smart, Normalization::Smart, false);
+    wait_for_worker(&mut nucleo);
+
+    let old_score = nucleo.snapshot().matches()[0].score;
+    let mut config = Config::DEFAULT;
+    config.prefer_prefix = true;
+    nucleo.update_config(config);
+    wait_for_worker(&mut nucleo);
+    assert!(nucleo.snapshot().matches()[0].score > old_score);
+
+    nucleo.sort_results(false);
+    wait_for_worker(&mut nucleo);
+    nucleo.reverse_items(true);
+    wait_for_worker(&mut nucleo);
+    assert_eq!(
+        nucleo
+            .snapshot()
+            .matches()
+            .iter()
+            .map(|match_| match_.idx)
+            .collect::<Vec<_>>(),
+        [1, 0]
+    );
 }
