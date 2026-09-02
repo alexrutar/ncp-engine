@@ -42,11 +42,12 @@ fn has_ascii_graphemes(string: &str) -> bool {
 /// examples demonstrating this.
 ///
 /// ### String conversions are not round-trip
-/// In the presence of a multi-codepoint grapheme (e.g. `"u\u{0308}"` which is `u +
-/// COMBINING_DIAERESIS`), the trailing codepoints are truncated.
+/// Two-codepoint graphemes with a canonical Unicode composition are represented by the composed
+/// character. In other multi-codepoint graphemes, the trailing codepoints are truncated.
 /// ```
 /// # use ncp_matcher::Utf32String;
-/// assert_eq!(Utf32String::from("u\u{0308}").to_string(), "u");
+/// assert_eq!(Utf32String::from("u\u{0308}").to_string(), "ü");
+/// assert_eq!(Utf32String::from("q\u{0308}").to_string(), "q");
 /// ```
 ///
 /// ### Indexing is done by grapheme

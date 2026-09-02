@@ -1,4 +1,38 @@
 use crate::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
+use crate::{Matcher, Utf32String};
+
+#[test]
+fn canonically_equivalent_needles() {
+    let nfc = Atom::new(
+        "ä",
+        CaseMatching::Respect,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+        false,
+    );
+    let nfd = Atom::new(
+        "a\u{0308}",
+        CaseMatching::Respect,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+        false,
+    );
+
+    assert_eq!(nfc.needle, nfd.needle);
+    assert_eq!(nfd.needle.to_string(), "ä");
+    assert!(!nfd.normalize);
+
+    let nfc_haystack = Utf32String::from("ä");
+    let nfd_haystack = Utf32String::from("a\u{0308}");
+    let plain_haystack = Utf32String::from("a");
+    let acute_haystack = Utf32String::from("á");
+    let mut matcher = Matcher::default();
+
+    assert!(nfd.score(nfc_haystack.slice(..), &mut matcher).is_some());
+    assert!(nfd.score(nfd_haystack.slice(..), &mut matcher).is_some());
+    assert!(nfd.score(plain_haystack.slice(..), &mut matcher).is_none());
+    assert!(nfd.score(acute_haystack.slice(..), &mut matcher).is_none());
+}
 
 #[test]
 fn negative() {

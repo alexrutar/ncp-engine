@@ -10,10 +10,11 @@ readme = "../README.md"
 
 [dependencies]
 memchr = "2.7.6"
+unicode-normalization = { version = "0.1.25", optional = true }
 unicode-segmentation = { version  = "1.12", optional = true }
 
 [features]
 default = ["unicode-normalization", "unicode-casefold", "unicode-segmentation"]
-unicode-normalization = []
+unicode-normalization = ["dep:unicode-normalization"]
 unicode-casefold = []
 unicode-segmentation = ["dep:unicode-segmentation"]

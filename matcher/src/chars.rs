@@ -123,7 +123,10 @@ impl Char for char {
         #[cfg(feature = "unicode-normalization")]
         if config.normalize {
             self = normalize::normalize_latin(self);
-            case_fold = true
+            #[cfg(feature = "unicode-casefold")]
+            {
+                case_fold = true;
+            }
         }
         #[cfg(feature = "unicode-casefold")]
         if case_fold && config.ignore_case {
@@ -194,15 +197,35 @@ pub(crate) enum CharClass {
 /// Returns an iterator over single-codepoint representations of each grapheme in the provided
 /// text.
 ///
-/// This iterates over graphemes and applies the [`canonicalize_latin`] function to each grapheme.
-/// Read its docs for more detail on what this function does.
+/// Note that the behaviour of this function depends on what Unicode-related features you
+/// have enabled:
+///
+/// - With `unicode-segmentation` and `unicode-normalization` (the default), this iterates over graphemes and
+///   applies the [`canonicalize_latin`] function to each grapheme. Read its docs for more detail.
+/// - With `unicode-segmentation` only, this manually maps `\r\n` to `\n`, but otherwise only takes
+///   the first char from the grapheme.
+/// - With neither of these features enabled, this just iterates over chars.
 ///
 /// We must perform this canonicalization since Nucleo cannot match graphemes as single units.
 /// Therefore, we internally map each grapheme to a simpler in-memory representation. This
 /// method is used when constructing `Utf32Str(ing)`.
 pub fn graphemes(text: &str) -> impl Iterator<Item = char> + '_ {
-    #[cfg(feature = "unicode-segmentation")]
+    #[cfg(all(feature = "unicode-segmentation", feature = "unicode-normalization"))]
     let res = text.graphemes(true).map(canonicalize_latin);
+    #[cfg(all(
+        feature = "unicode-segmentation",
+        not(feature = "unicode-normalization")
+    ))]
+    let res = text.graphemes(true).map(|grapheme| {
+        if grapheme == "\r\n" {
+            '\n'
+        } else {
+            grapheme
+                .chars()
+                .next()
+                .expect("graphemes must be non-empty")
+        }
+    });
     #[cfg(not(feature = "unicode-segmentation"))]
     let res = text.chars();
     res
