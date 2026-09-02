@@ -46,25 +46,15 @@ impl Config {
 
 impl Config {
     /// Configures the matcher with bonuses appropriate for matching file paths.
-    pub fn set_match_paths(&mut self) {
-        if cfg!(windows) {
-            self.delimiter_chars = b"/:\\";
-        } else {
-            self.delimiter_chars = b"/:";
-        }
+    pub const fn set_match_paths(&mut self) {
+        self.delimiter_chars = if cfg!(windows) { b"/:\\" } else { b"/:" };
         self.bonus_boundary_white = BONUS_BOUNDARY;
         self.initial_char_class = CharClass::Delimiter;
     }
 
     /// Configures the matcher with bonuses appropriate for matching file paths.
     pub const fn match_paths(mut self) -> Self {
-        if cfg!(windows) {
-            self.delimiter_chars = b"/\\";
-        } else {
-            self.delimiter_chars = b"/";
-        }
-        self.bonus_boundary_white = BONUS_BOUNDARY;
-        self.initial_char_class = CharClass::Delimiter;
+        self.set_match_paths();
         self
     }
 }
