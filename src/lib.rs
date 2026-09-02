@@ -648,12 +648,6 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
 
 impl<T> Drop for Nucleo<T> {
     fn drop(&mut self) {
-        // we ensure the worker quits before dropping items to ensure that
-        // the worker can always assume the items outlive it
         self.canceled.store(true, atomic::Ordering::Relaxed);
-        let lock = self.worker.try_lock_for(Duration::from_secs(1));
-        if lock.is_none() {
-            unreachable!("thread pool failed to shutdown properly")
-        }
     }
 }
