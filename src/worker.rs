@@ -56,12 +56,16 @@ pub(crate) struct Worker<T> {
     pub(crate) needs_rescore: bool,
     pub(crate) needs_sort: bool,
     pub(crate) canceled: Arc<AtomicBool>,
-    pub(crate) should_notify: Arc<AtomicBool>,
     pub(crate) was_canceled: bool,
     pub(crate) last_snapshot: u32,
-    notify: Arc<dyn Fn() + Sync + Send>,
     pub(crate) items: Arc<boxcar::Vec<T>>,
     in_flight: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RunOutcome {
+    Completed,
+    Canceled,
 }
 
 impl<T: Sync + Send + 'static> Worker<T> {
@@ -90,7 +94,6 @@ impl<T: Sync + Send + 'static> Worker<T> {
     pub(crate) fn new(
         worker_threads: Option<usize>,
         config: Config,
-        notify: Arc<dyn Fn() + Sync + Send>,
         cols: u32,
         match_config: MatchListConfig,
     ) -> (ThreadPool, Self) {
@@ -117,9 +120,7 @@ impl<T: Sync + Send + 'static> Worker<T> {
             needs_rescore: false,
             needs_sort: false,
             canceled: Arc::new(AtomicBool::new(false)),
-            should_notify: Arc::new(AtomicBool::new(false)),
             was_canceled: false,
-            notify,
             items: Arc::new(boxcar::Vec::with_capacity(2 * 1024, cols)),
             in_flight: Vec::with_capacity(64),
         };
@@ -206,7 +207,11 @@ impl<T: Sync + Send + 'static> Worker<T> {
         }
     }
 
-    pub(crate) unsafe fn run(&mut self, pattern_status: pattern::Status, cleared: bool) {
+    pub(crate) unsafe fn run(
+        &mut self,
+        pattern_status: pattern::Status,
+        cleared: bool,
+    ) -> RunOutcome {
         unsafe {
             self.running = true;
             self.was_canceled = false;
@@ -224,10 +229,7 @@ impl<T: Sync + Send + 'static> Worker<T> {
                 if self.reverse_items {
                     self.matches.reverse();
                 }
-                if self.should_notify.load(atomic::Ordering::Relaxed) {
-                    (self.notify)();
-                }
-                return;
+                return RunOutcome::Completed;
             }
 
             if pattern_status == pattern::Status::Rescore {
@@ -265,12 +267,11 @@ impl<T: Sync + Send + 'static> Worker<T> {
             let canceled = self.sort_matches();
             if canceled {
                 self.was_canceled = true;
+                RunOutcome::Canceled
             } else {
                 self.matches
                     .truncate(self.matches.len() - take(unmatched.get_mut()) as usize);
-                if self.should_notify.load(atomic::Ordering::Relaxed) {
-                    (self.notify)();
-                }
+                RunOutcome::Completed
             }
         }
     }

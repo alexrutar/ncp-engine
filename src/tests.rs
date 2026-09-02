@@ -1,5 +1,6 @@
-use std::sync::Arc;
-use std::{rc::Rc, sync::MutexGuard};
+use std::rc::Rc;
+use std::sync::{Arc, MutexGuard, mpsc};
+use std::time::Duration;
 
 use ncp_matcher::Config;
 
@@ -109,4 +110,35 @@ fn reverse_items_applies_to_empty_pattern() {
             .collect::<Vec<_>>(),
         [1, 0]
     );
+}
+
+#[test]
+fn completed_worker_sends_notification() {
+    let (sender, receiver) = mpsc::channel();
+    let mut nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| ()), Some(1), 1);
+    let worker = Arc::clone(&nucleo.worker);
+    nucleo.notify = Arc::new(move || {
+        assert!(
+            worker.try_lock().is_some(),
+            "notifications must be sent after releasing the worker lock"
+        );
+        let _ = sender.send(());
+    });
+    let injector = nucleo.injector();
+    injector.push("candidate".to_owned(), |item, columns| {
+        columns[0] = item.as_str().into();
+    });
+
+    // Discard the synchronous notification sent by the injector.
+    receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    nucleo
+        .pattern
+        .reparse(0, "can", CaseMatching::Smart, Normalization::Smart, false);
+    nucleo.tick(0);
+
+    receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("a completed worker must send a notification");
+    wait_for_worker(&mut nucleo);
 }

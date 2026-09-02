@@ -30,7 +30,7 @@ use rayon::ThreadPool;
 
 use crate::pattern::MultiPattern;
 pub use crate::worker::MatchListConfig;
-use crate::worker::Worker;
+use crate::worker::{RunOutcome, Worker};
 pub use ncp_matcher::{Config, Matcher, Utf32Str, Utf32String, chars};
 
 mod boxcar;
@@ -438,7 +438,6 @@ pub struct Nucleo<T> {
     // the way the API is build we totally don't actually need these to be Arcs
     // but this lets us avoid some unsafe
     canceled: Arc<AtomicBool>,
-    should_notify: Arc<AtomicBool>,
     worker: Arc<Mutex<Worker<T>>>,
     pool: ThreadPool,
     state: State,
@@ -491,16 +490,9 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         columns: u32,
         match_list_config: MatchListConfig,
     ) -> Self {
-        let (pool, worker) = Worker::new(
-            num_threads,
-            config,
-            notify.clone(),
-            columns,
-            match_list_config,
-        );
+        let (pool, worker) = Worker::new(num_threads, config, columns, match_list_config);
         Self {
             canceled: worker.canceled.clone(),
-            should_notify: worker.should_notify.clone(),
             items: worker.items.clone(),
             pool,
             pattern: MultiPattern::new(columns as usize),
@@ -584,7 +576,6 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     /// redraws this method will wait `timeout` milliseconds for the
     /// worker threads to finish. It is recommend to set the timeout to 10ms.
     pub fn tick(&mut self, timeout: u64) -> Status {
-        self.should_notify.store(false, atomic::Ordering::Relaxed);
         let status = self.pattern.status();
         let canceled = status != pattern::Status::Unchanged || self.state.canceled();
         let mut res = self.tick_inner(timeout, canceled, status);
@@ -605,7 +596,6 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
             self.worker.lock_arc()
         } else {
             let Some(worker) = self.worker.try_lock_arc_for(Duration::from_millis(timeout)) else {
-                self.should_notify.store(true, Ordering::Release);
                 return Status {
                     changed: false,
                     running: true,
@@ -634,15 +624,18 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
             inner.needs_sort = false;
             inner.pattern.clone_from(&self.pattern);
             self.canceled.store(false, atomic::Ordering::Relaxed);
-            if !canceled {
-                self.should_notify.store(true, atomic::Ordering::Release);
-            }
             let cleared = self.state.cleared();
             if cleared {
                 inner.items = self.items.clone();
             }
-            self.pool
-                .spawn(move || unsafe { inner.run(status, cleared) });
+            let notify = Arc::clone(&self.notify);
+            self.pool.spawn(move || {
+                let outcome = unsafe { inner.run(status, cleared) };
+                drop(inner);
+                if outcome == RunOutcome::Completed {
+                    notify();
+                }
+            });
         }
         Status { changed, running }
     }
