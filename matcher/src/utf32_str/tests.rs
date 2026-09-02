@@ -27,7 +27,7 @@ fn test_utf32str_ascii() {
 }
 
 #[test]
-fn test_grapheme_truncation() {
+fn test_grapheme_canonicalization() {
     // ascii is preserved
     let s = Utf32String::from("ab");
     assert_eq!(s.slice(..).get(0), 'a');
@@ -37,8 +37,20 @@ fn test_grapheme_truncation() {
     let s = Utf32String::from("\r\n");
     assert_eq!(s.slice(..).get(0), '\n');
 
-    // normal graphemes are truncated to the first character
+    // canonically composable graphemes are composed
     let s = Utf32String::from("u\u{0308}\r\n");
-    assert_eq!(s.slice(..).get(0), 'u');
+    assert_eq!(s.slice(..).get(0), 'ü');
     assert_eq!(s.slice(..).get(1), '\n');
+    assert_eq!(Utf32String::from("a\u{0302}\u{0301}").slice(..).get(0), 'ấ');
+    assert_eq!(
+        Utf32String::from("\u{1112}\u{1161}\u{11ab}")
+            .slice(..)
+            .get(0),
+        '한'
+    );
+
+    // Other multi-codepoint graphemes are truncated after NFC normalization
+    assert_eq!(Utf32String::from("q\u{0308}").slice(..).get(0), 'q');
+    assert_eq!(Utf32String::from("q\u{0308}\u{0301}").slice(..).get(0), 'q');
+    assert_eq!(Utf32String::from("👩\u{200d}💻").slice(..).get(0), '👩');
 }
