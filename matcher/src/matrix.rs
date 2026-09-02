@@ -161,7 +161,8 @@ impl MatrixSlab {
         haystack_: &[C],
         needle_len: usize,
     ) -> Option<MatcherDataView<'_, C>> {
-        let cells = haystack_.len() * needle_len;
+        let matrix_width = haystack_.len() + 1 - needle_len;
+        let cells = matrix_width * needle_len;
         if cells > MAX_MATRIX_SIZE
             || haystack_.len() > u16::MAX as usize
             // ensures that scores never overflow
