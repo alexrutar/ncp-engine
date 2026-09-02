@@ -543,6 +543,14 @@ fn test_unicode() {
             BONUS_BOUNDARY_WHITE * BONUS_FIRST_CHAR_MULTIPLIER - PENALTY_GAP_START,
         )],
     );
+    assert_matches(
+        &[Substring],
+        false,
+        false,
+        false,
+        false,
+        &[("世你好", "你好", &[1, 2], BONUS_CONSECUTIVE)],
+    );
     assert_not_matches(
         false,
         false,

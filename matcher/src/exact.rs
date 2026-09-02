@@ -237,7 +237,7 @@ impl Matcher {
             .map(|i| haystack[i].char_class(&self.config))
             .unwrap_or(self.config.initial_char_class);
         let end = haystack.len() - needle.len();
-        for (i, &c) in haystack[start..end].iter().enumerate() {
+        for (i, &c) in haystack[start..=end].iter().enumerate() {
             let (c, char_class) = c.char_class_and_normalize(&self.config);
             if c != needle[0] {
                 continue;
