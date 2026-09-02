@@ -221,6 +221,9 @@ impl<T: Sync + Send + 'static> Worker<T> {
             if self.pattern.is_empty() {
                 self.reset_matches();
                 self.process_new_items_trivial();
+                if self.reverse_items {
+                    self.matches.reverse();
+                }
                 if self.should_notify.load(atomic::Ordering::Relaxed) {
                     (self.notify)();
                 }

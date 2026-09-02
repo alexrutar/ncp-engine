@@ -3,8 +3,8 @@ use std::{rc::Rc, sync::MutexGuard};
 
 use ncp_matcher::Config;
 
-use crate::Nucleo;
 use crate::pattern::{CaseMatching, Normalization};
+use crate::{MatchListConfig, Nucleo};
 
 fn wait_for_worker(nucleo: &mut Nucleo<String>) {
     while nucleo.tick(100).running {}
@@ -67,6 +67,39 @@ fn configuration_changes_schedule_worker_updates() {
     wait_for_worker(&mut nucleo);
     nucleo.reverse_items(true);
     wait_for_worker(&mut nucleo);
+    assert_eq!(
+        nucleo
+            .snapshot()
+            .matches()
+            .iter()
+            .map(|match_| match_.idx)
+            .collect::<Vec<_>>(),
+        [1, 0]
+    );
+}
+
+#[test]
+fn reverse_items_applies_to_empty_pattern() {
+    let match_list_config = MatchListConfig {
+        sort_results: true,
+        reverse_items: true,
+    };
+    let mut nucleo = Nucleo::with_match_list_config(
+        Config::DEFAULT,
+        Arc::new(|| ()),
+        Some(1),
+        1,
+        match_list_config,
+    );
+    let injector = nucleo.injector();
+    injector.push("first".to_owned(), |item, columns| {
+        columns[0] = item.as_str().into();
+    });
+    injector.push("second".to_owned(), |item, columns| {
+        columns[0] = item.as_str().into();
+    });
+    wait_for_worker(&mut nucleo);
+
     assert_eq!(
         nucleo
             .snapshot()
