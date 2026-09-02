@@ -26,7 +26,10 @@ use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::panic::{RefUnwindSafe, UnwindSafe};
+use std::ptr::NonNull;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{ptr, slice};
 
 #[cfg(not(target_has_atomic = "64"))]
@@ -39,7 +42,10 @@ use crate::{Item, Utf32String};
 const BUCKETS: u32 = u32::BITS - SKIP_BUCKET;
 const MAX_ENTRIES: u32 = u32::MAX - SKIP;
 
-/// A lock-free, append-only vector.
+/// A concurrent, append-only vector.
+///
+/// Insertion into an initialized bucket is lock-free and wait-free. The first
+/// insertion into a bucket may wait for another thread to finish allocating it.
 pub(crate) struct Vec<T> {
     /// a counter used to retrieve a unique index to push to.
     ///
@@ -52,7 +58,7 @@ pub(crate) struct Vec<T> {
     /// this remains constant and after initilaziaton (safety invariant) since
     /// it is used to calculate the Entry layout
     columns: u32,
-    /// We own values of `T` even though the pointers are atomic.
+    /// We own values of `T` through raw allocation pointers.
     _marker: PhantomData<T>,
 }
 
@@ -71,7 +77,9 @@ impl<T> Vec<T> {
         }
 
         Self {
-            buckets: buckets.map(Bucket::new),
+            buckets: std::array::from_fn(|i| {
+                Bucket::new(buckets[i], Location::bucket_len(i as u32), columns)
+            }),
             inflight: Inflight::new(0),
             columns,
             _marker: PhantomData,
@@ -97,12 +105,13 @@ impl<T> Vec<T> {
         let location = Location::of(index);
 
         unsafe {
-            let entries = self
+            let allocation = self
                 .buckets
                 .get_unchecked(location.bucket as usize)
                 .entries
-                .load(Ordering::Acquire);
-            debug_assert!(!entries.is_null());
+                .get();
+            debug_assert!(allocation.is_some());
+            let entries = allocation.unwrap_unchecked().entries.as_ptr();
             let entry = Bucket::<T>::get(entries, location.entry, self.columns);
             // this looks odd but is necessary to ensure cross
             // thread synchronization (essentially acting as a memory barrier)
@@ -119,16 +128,12 @@ impl<T> Vec<T> {
 
         unsafe {
             // safety: `location.bucket` is always in bounds
-            let entries = self
+            let allocation = self
                 .buckets
                 .get_unchecked(location.bucket as usize)
                 .entries
-                .load(Ordering::Acquire);
-
-            // bucket is uninitialized
-            if entries.is_null() {
-                return None;
-            }
+                .get()?;
+            let entries = allocation.entries.as_ptr();
 
             // safety: `location.entry` is always in bounds for it's bucket
             let entry = Bucket::<T>::get(entries, location.entry, self.columns);
@@ -158,12 +163,7 @@ impl<T> Vec<T> {
 
         // safety: `location.bucket` is always in bounds
         let bucket = unsafe { self.buckets.get_unchecked(location.bucket as usize) };
-        let mut entries = bucket.entries.load(Ordering::Acquire);
-
-        // the bucket has not been allocated yet
-        if entries.is_null() {
-            entries = Self::get_or_alloc(bucket, location.bucket_len, self.columns);
-        }
+        let entries = bucket.get_or_alloc(location.bucket_len, self.columns);
 
         unsafe {
             // safety: `location.entry` is always in bounds for it's bucket
@@ -222,10 +222,7 @@ impl<T> Vec<T> {
 
             let start_location = Location::of(start_index);
             let mut bucket = unsafe { self.buckets.get_unchecked(start_location.bucket as usize) };
-            let mut entries = bucket.entries.load(Ordering::Acquire);
-            if entries.is_null() {
-                entries = Self::get_or_alloc(bucket, start_location.bucket_len, self.columns);
-            }
+            let mut entries = bucket.get_or_alloc(start_location.bucket_len, self.columns);
 
             let mut inserted = 0;
             for (i, v) in values.by_ref().take(count as usize).enumerate() {
@@ -237,11 +234,7 @@ impl<T> Vec<T> {
                 if location.entry == 0 && i != 0 {
                     // safety: `location.bucket` is always in bounds
                     bucket = unsafe { self.buckets.get_unchecked(location.bucket as usize) };
-                    entries = bucket.entries.load(Ordering::Acquire);
-
-                    if entries.is_null() {
-                        entries = Self::get_or_alloc(bucket, location.bucket_len, self.columns);
-                    }
+                    entries = bucket.get_or_alloc(location.bucket_len, self.columns);
                 }
 
                 unsafe {
@@ -298,23 +291,6 @@ impl<T> Vec<T> {
         self.inflight.load(ordering)
     }
 
-    /// race to initialize a bucket
-    fn get_or_alloc(bucket: &Bucket<T>, len: u32, cols: u32) -> *mut Entry<T> {
-        let entries = unsafe { Bucket::alloc(len, cols) };
-        match bucket.entries.compare_exchange(
-            ptr::null_mut(),
-            entries,
-            Ordering::Release,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => entries,
-            Err(found) => unsafe {
-                Bucket::dealloc(entries, len, cols);
-                found
-            },
-        }
-    }
-
     /// Returns an iterator over the vector starting at `start`
     /// the iterator is deterministically sized and will not grow
     /// as more elements are pushed
@@ -344,22 +320,6 @@ impl<T> Vec<T> {
     }
 }
 
-impl<T> Drop for Vec<T> {
-    fn drop(&mut self) {
-        for (i, bucket) in self.buckets.iter_mut().enumerate() {
-            let entries = *bucket.entries.get_mut();
-
-            if entries.is_null() {
-                // Concurrent pushes can allocate a later bucket before an earlier one.
-                continue;
-            }
-
-            let len = Location::bucket_len(i as u32);
-            // safety: in drop
-            unsafe { Bucket::dealloc(entries, len, self.columns) }
-        }
-    }
-}
 type SnapshotItem<'v, T> = (u32, Option<Item<'v, T>>);
 
 pub struct Iter<'v, T> {
@@ -391,23 +351,24 @@ impl<'v, T> Iterator for Iter<'v, T> {
         debug_assert!(self.end <= self.vec.inflight_count(Ordering::Relaxed));
 
         loop {
-            let entries = unsafe {
+            let allocation = unsafe {
                 self.vec
                     .buckets
                     .get_unchecked(self.location.bucket as usize)
                     .entries
-                    .load(Ordering::Acquire)
+                    .get()
             };
             debug_assert!(self.location.bucket < BUCKETS);
 
             if self.location.entry < self.location.bucket_len {
-                if entries.is_null() {
+                let Some(allocation) = allocation else {
                     // we still want to yield these
                     let index = self.idx;
                     self.location.entry += 1;
                     self.idx += 1;
                     return Some((index, None));
-                }
+                };
+                let entries = allocation.entries.as_ptr();
                 // safety: bounds and null checked above
                 let entry = unsafe { Bucket::get(entries, self.location.entry, self.vec.columns) };
                 let index = self.idx;
@@ -442,17 +403,17 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
         self.end -= 1;
         let index = self.end;
         let location = Location::of(index);
-        let entries = unsafe {
+        let allocation = unsafe {
             self.vec
                 .buckets
                 .get_unchecked(location.bucket as usize)
                 .entries
-                .load(Ordering::Acquire)
+                .get()
         };
-
-        if entries.is_null() {
+        let Some(allocation) = allocation else {
             return Some((index, None));
-        }
+        };
+        let entries = allocation.entries.as_ptr();
 
         let entry = unsafe { Bucket::get(entries, location.entry, self.vec.columns) };
         let entry = unsafe {
@@ -551,10 +512,66 @@ impl<'v, T: 'v + Send + Sync> rayon::iter::plumbing::Producer for ParIterProduce
 }
 
 struct Bucket<T> {
-    entries: AtomicPtr<Entry<T>>,
+    entries: OnceLock<BucketAllocation<T>>,
+    #[cfg(test)]
+    allocation_attempts: std::sync::atomic::AtomicUsize,
+}
+
+struct BucketAllocation<T> {
+    entries: NonNull<Entry<T>>,
+    len: u32,
+    cols: u32,
+}
+
+// The allocation owns its entries and may be moved to another thread when the
+// entries themselves may be moved there.
+unsafe impl<T: Send> Send for BucketAllocation<T> {}
+
+// Each entry is written only by the thread that reserved its index and is read
+// only after its `active` flag publishes initialization.
+unsafe impl<T: Send + Sync> Sync for BucketAllocation<T> {}
+
+// The allocation's interior mutability is limited to unpublished entries. A
+// panic can leave an entry inactive, but readers cannot observe its contents.
+impl<T: UnwindSafe> UnwindSafe for BucketAllocation<T> {}
+impl<T: RefUnwindSafe> RefUnwindSafe for BucketAllocation<T> {}
+
+impl<T> BucketAllocation<T> {
+    /// # Safety
+    ///
+    /// `len` and `cols` must describe the bucket containing this allocation for
+    /// its entire lifetime.
+    unsafe fn new(len: u32, cols: u32) -> Self {
+        let entries = unsafe { Bucket::alloc(len, cols) };
+        Self {
+            // SAFETY: `Bucket::alloc` either returns a non-null allocation or
+            // invokes `handle_alloc_error`.
+            entries: unsafe { NonNull::new_unchecked(entries) },
+            len,
+            cols,
+        }
+    }
+}
+
+impl<T> Drop for BucketAllocation<T> {
+    fn drop(&mut self) {
+        unsafe { Bucket::dealloc(self.entries.as_ptr(), self.len, self.cols) }
+    }
 }
 
 impl<T> Bucket<T> {
+    fn get_or_alloc(&self, len: u32, cols: u32) -> *mut Entry<T> {
+        self.entries
+            .get_or_init(|| {
+                #[cfg(test)]
+                self.allocation_attempts.fetch_add(1, Ordering::Relaxed);
+
+                unsafe { BucketAllocation::new(len, cols) }
+            })
+            .entries
+            .as_ptr()
+    }
+
     fn layout(len: u32, layout: Layout) -> Layout {
         let size = layout
             .size()
@@ -605,9 +622,15 @@ impl<T> Bucket<T> {
         }
     }
 
-    fn new(entries: *mut Entry<T>) -> Self {
+    fn new(entries: *mut Entry<T>, len: u32, cols: u32) -> Self {
+        let entries = match NonNull::new(entries) {
+            Some(entries) => OnceLock::from(BucketAllocation { entries, len, cols }),
+            None => OnceLock::new(),
+        };
         Self {
-            entries: AtomicPtr::new(entries),
+            entries,
+            #[cfg(test)]
+            allocation_attempts: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -736,30 +759,15 @@ mod tests {
             empty
                 .buckets
                 .iter()
-                .all(|bucket| bucket.entries.load(Ordering::Relaxed).is_null())
+                .all(|bucket| bucket.entries.get().is_none())
         );
 
         let first_bucket = Vec::<u32>::with_capacity(32, 1);
-        assert!(
-            !first_bucket.buckets[0]
-                .entries
-                .load(Ordering::Relaxed)
-                .is_null()
-        );
-        assert!(
-            first_bucket.buckets[1]
-                .entries
-                .load(Ordering::Relaxed)
-                .is_null()
-        );
+        assert!(first_bucket.buckets[0].entries.get().is_some());
+        assert!(first_bucket.buckets[1].entries.get().is_none());
 
         let second_bucket = Vec::<u32>::with_capacity(33, 1);
-        assert!(
-            !second_bucket.buckets[1]
-                .entries
-                .load(Ordering::Relaxed)
-                .is_null()
-        );
+        assert!(second_bucket.buckets[1].entries.get().is_some());
     }
 
     #[test]
@@ -775,8 +783,9 @@ mod tests {
         let drops = AtomicUsize::new(0);
         let mut vec = Vec::<CountDrops<'_>>::with_capacity(0, 1);
         let bucket = &mut vec.buckets[2];
-        let entries = unsafe { Bucket::alloc(Location::bucket_len(2), vec.columns) };
-        *bucket.entries.get_mut() = entries;
+        let allocation = unsafe { BucketAllocation::new(Location::bucket_len(2), vec.columns) };
+        let entries = allocation.entries.as_ptr();
+        assert!(bucket.entries.set(allocation).is_ok());
 
         unsafe {
             let entry = Bucket::get(entries, 0, vec.columns);
@@ -902,26 +911,41 @@ mod tests {
         for value in 0..29 {
             pushed.push(value, |_, _| {});
         }
-        assert!(pushed.buckets[1].entries.load(Ordering::Relaxed).is_null());
+        assert!(pushed.buckets[1].entries.get().is_none());
         for value in 29..33 {
             pushed.push(value, |_, _| {});
         }
-        assert!(!pushed.buckets[1].entries.load(Ordering::Relaxed).is_null());
+        assert!(pushed.buckets[1].entries.get().is_some());
 
         let extended = Vec::<u32>::with_capacity(0, 1);
         extended.extend(0..29, |_, _| {});
-        assert!(
-            extended.buckets[1]
-                .entries
-                .load(Ordering::Relaxed)
-                .is_null()
-        );
+        assert!(extended.buckets[1].entries.get().is_none());
         extended.extend(29..33, |_, _| {});
-        assert!(
-            !extended.buckets[1]
-                .entries
-                .load(Ordering::Relaxed)
-                .is_null()
+        assert!(extended.buckets[1].entries.get().is_some());
+    }
+
+    #[test]
+    fn concurrent_push_allocates_each_bucket_once() {
+        const THREADS: u32 = 16;
+
+        let vec = Vec::<u32>::with_capacity(0, 1);
+        vec.inflight.store(32, Ordering::Relaxed);
+        let barrier = std::sync::Barrier::new(THREADS as usize);
+
+        std::thread::scope(|scope| {
+            for value in 0..THREADS {
+                let vec = &vec;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    vec.push(value, |_, _| {});
+                });
+            }
+        });
+
+        assert_eq!(
+            vec.buckets[1].allocation_attempts.load(Ordering::Relaxed),
+            1
         );
     }
 

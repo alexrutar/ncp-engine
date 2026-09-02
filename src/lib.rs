@@ -13,8 +13,9 @@
 //! Matching runs in a background threadpool while providing a snapshot of the last
 //! complete match on request. That means the matcher can update the results live while
 //! the user is typing, while never blocking the main UI thread (beyond a user provided
-//! timeout). Nucleo also supports fully concurrent lock-free (and wait-free) streaming
-//! of input items.
+//! timeout). Nucleo also supports fully concurrent streaming of input items. Insertion
+//! is lock-free and wait-free after the destination bucket has been allocated; the first
+//! insertion into a bucket may wait for another thread to finish allocating it.
 //!
 //! The [`Nucleo`] struct serves as the main API entrypoint for this crate.
 
@@ -127,9 +128,10 @@ impl<T> Clone for Injector<T> {
 impl<T> Injector<T> {
     /// Appends an element to the list of match candidates.
     ///
-    /// This function is lock-free and wait-free. The returned `u32` is the internal index which
-    /// has been assigned to the provided value and is guaranteed to be valid unless
-    /// [`Nucleo::restart`] has been called.
+    /// This function is lock-free and wait-free after the destination bucket has been allocated.
+    /// The first insertion into a bucket may wait for another thread to finish allocating it. The
+    /// returned `u32` is the internal index which has been assigned to the provided value and is
+    /// guaranteed to be valid unless [`Nucleo::restart`] has been called.
     ///
     /// The `fill_columns` closure is called to generate the representation of the pushed value
     /// within the matcher engine. The first argument is a reference to the provided value, and the
@@ -151,8 +153,9 @@ impl<T> Injector<T> {
         idx
     }
 
-    /// Appends multiple elements to the list of matched items. This function is lock-free
-    /// and wait-free.
+    /// Appends multiple elements to the list of matched items. Insertion is lock-free and
+    /// wait-free after the destination buckets have been allocated. The first insertion into a
+    /// bucket may wait for another thread to finish allocating it.
     ///
     /// You should favor this function over `push` if at least one of the following is true:
     /// - The number of items you're adding can be computed beforehand and is typically larger
