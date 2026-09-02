@@ -101,7 +101,7 @@ impl<T> Vec<T> {
                 .buckets
                 .get_unchecked(location.bucket as usize)
                 .entries
-                .load(Ordering::Relaxed);
+                .load(Ordering::Acquire);
             debug_assert!(!entries.is_null());
             let entry = Bucket::<T>::get(entries, location.entry, self.columns);
             // this looks odd but is necessary to ensure cross
@@ -123,7 +123,7 @@ impl<T> Vec<T> {
                 .buckets
                 .get_unchecked(location.bucket as usize)
                 .entries
-                .load(Ordering::Relaxed);
+                .load(Ordering::Acquire);
 
             // bucket is uninitialized
             if entries.is_null() {
@@ -396,7 +396,7 @@ impl<'v, T> Iterator for Iter<'v, T> {
                     .buckets
                     .get_unchecked(self.location.bucket as usize)
                     .entries
-                    .load(Ordering::Relaxed)
+                    .load(Ordering::Acquire)
             };
             debug_assert!(self.location.bucket < BUCKETS);
 
@@ -447,7 +447,7 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
                 .buckets
                 .get_unchecked(location.bucket as usize)
                 .entries
-                .load(Ordering::Relaxed)
+                .load(Ordering::Acquire)
         };
 
         if entries.is_null() {
