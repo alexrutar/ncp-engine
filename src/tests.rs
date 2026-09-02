@@ -43,6 +43,48 @@ fn active_injector_count() {
 }
 
 #[test]
+fn detached_items_are_not_counted_as_injectors() {
+    let mut nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| ()), Some(1), 1);
+    let injector = nucleo.injector();
+    let index = injector.push("candidate".to_owned(), |item, columns| {
+        columns[0] = item.as_str().into();
+    });
+    let detached_from_injector = injector.get_detached_item(index).unwrap();
+    let detached_clone = detached_from_injector.clone();
+    assert_eq!(nucleo.active_injectors(), 1);
+
+    wait_for_worker(&mut nucleo);
+    let detached_from_snapshot = nucleo.snapshot().get_detached_item(index).unwrap();
+    assert_eq!(nucleo.active_injectors(), 1);
+
+    drop(injector);
+    assert_eq!(nucleo.active_injectors(), 0);
+    assert_eq!(detached_from_injector.item().data, "candidate");
+    assert_eq!(detached_clone.item().data, "candidate");
+    assert_eq!(detached_from_snapshot.item().data, "candidate");
+}
+
+#[test]
+fn restart_counts_only_current_generation_injectors() {
+    let mut nucleo: Nucleo<()> = Nucleo::new(Config::DEFAULT, Arc::new(|| ()), Some(1), 1);
+    let old_injector = nucleo.injector();
+    assert_eq!(nucleo.active_injectors(), 1);
+
+    nucleo.restart(false);
+    assert_eq!(nucleo.active_injectors(), 0);
+    let old_injector_clone = old_injector.clone();
+    assert_eq!(nucleo.active_injectors(), 0);
+
+    let current_injector = nucleo.injector();
+    assert_eq!(nucleo.active_injectors(), 1);
+    drop(old_injector);
+    drop(old_injector_clone);
+    assert_eq!(nucleo.active_injectors(), 1);
+    drop(current_injector);
+    assert_eq!(nucleo.active_injectors(), 0);
+}
+
+#[test]
 fn configuration_changes_schedule_worker_updates() {
     let mut nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| ()), Some(1), 1);
     let injector = nucleo.injector();
@@ -117,7 +159,7 @@ fn completed_worker_sends_notification() {
     let (sender, receiver) = mpsc::channel();
     let mut nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| ()), Some(1), 1);
     let worker = Arc::clone(&nucleo.worker);
-    nucleo.notify = Arc::new(move || {
+    Arc::get_mut(&mut nucleo.injector).unwrap().notify = Arc::new(move || {
         assert!(
             worker.try_lock().is_some(),
             "notifications must be sent after releasing the worker lock"

@@ -108,6 +108,10 @@ impl<T> Clone for DetachedItem<T> {
 /// An `Injector` is internally reference counted and can be cheaply
 /// cloned and sent across threads.
 pub struct Injector<T> {
+    inner: Arc<InjectorInner<T>>,
+}
+
+struct InjectorInner<T> {
     items: Arc<boxcar::Vec<T>>,
     notify: Arc<dyn Fn() + Sync + Send>,
 }
@@ -115,8 +119,7 @@ pub struct Injector<T> {
 impl<T> Clone for Injector<T> {
     fn clone(&self) -> Self {
         Self {
-            items: self.items.clone(),
-            notify: self.notify.clone(),
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -143,8 +146,8 @@ impl<T> Injector<T> {
     /// };
     /// ```
     pub fn push(&self, value: T, fill_columns: impl FnOnce(&T, &mut [Utf32String])) -> u32 {
-        let idx = self.items.push(value, fill_columns);
-        (self.notify)();
+        let idx = self.inner.items.push(value, fill_columns);
+        (self.inner.notify)();
         idx
     }
 
@@ -161,8 +164,8 @@ impl<T> Injector<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        self.items.extend(values, fill_columns);
-        (self.notify)();
+        self.inner.items.extend(values, fill_columns);
+        (self.inner.notify)();
     }
 
     /// Returns the total number of items injected in the matcher.
@@ -170,13 +173,13 @@ impl<T> Injector<T> {
     /// This may not match the number of items in the match snapshot if the matcher
     /// is still running.
     pub fn injected_items(&self) -> u32 {
-        self.items.count()
+        self.inner.items.count()
     }
 
     /// Returns a reference to the item at the given index.
     #[inline]
     pub fn get_item(&self, index: u32) -> Option<Item<'_, T>> {
-        self.items.get(index)
+        self.inner.items.get(index)
     }
 
     /// Returns a reference to the item at the given index without checking that the index is valid.
@@ -189,15 +192,16 @@ impl<T> Injector<T> {
     /// is initialized
     #[inline]
     pub unsafe fn get_item_unchecked(&self, index: u32) -> Item<'_, T> {
-        unsafe { self.items.get_unchecked(index) }
+        unsafe { self.inner.items.get_unchecked(index) }
     }
 
     /// Returns the detached item at the given index.
     #[inline]
     pub fn get_detached_item(&self, index: u32) -> Option<DetachedItem<T>> {
-        self.items
+        self.inner
+            .items
             .is_valid(index)
-            .then(|| unsafe { DetachedItem::new(&self.items, index) })
+            .then(|| unsafe { DetachedItem::new(&self.inner.items, index) })
     }
 
     /// Returns the detached item at the given index without checking that the index is valid.
@@ -210,7 +214,7 @@ impl<T> Injector<T> {
     /// is initialized
     #[inline]
     pub unsafe fn get_detached_item_unchecked(&self, index: u32) -> DetachedItem<T> {
-        unsafe { DetachedItem::new(&self.items, index) }
+        unsafe { DetachedItem::new(&self.inner.items, index) }
     }
 }
 
@@ -387,13 +391,6 @@ enum State {
 }
 
 impl State {
-    fn matcher_item_refs(self) -> usize {
-        match self {
-            Self::Cleared => 1,
-            Self::Init | Self::Fresh => 2,
-        }
-    }
-
     fn canceled(self) -> bool {
         self != Self::Fresh
     }
@@ -441,8 +438,7 @@ pub struct Nucleo<T> {
     worker: Arc<Mutex<Worker<T>>>,
     pool: ThreadPool,
     state: State,
-    items: Arc<boxcar::Vec<T>>,
-    notify: Arc<dyn Fn() + Sync + Send>,
+    injector: Arc<InjectorInner<T>>,
     snapshot: Snapshot<T>,
     /// The pattern matched by this matcher.
     ///
@@ -491,9 +487,12 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         match_list_config: MatchListConfig,
     ) -> Self {
         let (pool, worker) = Worker::new(num_threads, config, columns, match_list_config);
+        let injector = Arc::new(InjectorInner {
+            items: worker.items.clone(),
+            notify,
+        });
         Self {
             canceled: worker.canceled.clone(),
-            items: worker.items.clone(),
             pool,
             pattern: MultiPattern::new(columns as usize),
             snapshot: Snapshot {
@@ -504,15 +503,14 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
             },
             worker: Arc::new(Mutex::new(worker)),
             state: State::Init,
-            notify,
+            injector,
         }
     }
 
     /// Returns the total number of active injectors.
     pub fn active_injectors(&self) -> usize {
-        Arc::strong_count(&self.items)
-            - self.state.matcher_item_refs()
-            - (Arc::ptr_eq(&self.snapshot.items, &self.items)) as usize
+        // Nucleo owns the only non-Injector reference to the current generation.
+        Arc::strong_count(&self.injector) - 1
     }
 
     /// Returns a snapshot of the current matcher state.
@@ -526,8 +524,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     /// Returns an injector that can be used for adding candidates to the matcher.
     pub fn injector(&self) -> Injector<T> {
         Injector {
-            items: self.items.clone(),
-            notify: self.notify.clone(),
+            inner: Arc::clone(&self.injector),
         }
     }
 
@@ -544,10 +541,17 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
     /// and detached items are dropped.
     pub fn restart(&mut self, clear_snapshot: bool) {
         self.canceled.store(true, Ordering::Relaxed);
-        self.items = Arc::new(boxcar::Vec::with_capacity(1024, self.items.columns()));
+        let items = Arc::new(boxcar::Vec::with_capacity(
+            1024,
+            self.injector.items.columns(),
+        ));
+        self.injector = Arc::new(InjectorInner {
+            items: Arc::clone(&items),
+            notify: Arc::clone(&self.injector.notify),
+        });
         self.state = State::Cleared;
         if clear_snapshot {
-            self.snapshot.clear(self.items.clone());
+            self.snapshot.clear(items);
         }
     }
 
@@ -607,7 +611,8 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         let pending_update = inner.needs_rescore || inner.needs_sort;
         let changed = inner.running && !pending_update;
 
-        let running = canceled || pending_update || self.items.count() > inner.item_count();
+        let running =
+            canceled || pending_update || self.injector.items.count() > inner.item_count();
         if inner.running {
             inner.running = false;
             if !inner.was_canceled && !self.state.canceled() && !pending_update {
@@ -626,9 +631,9 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
             self.canceled.store(false, atomic::Ordering::Relaxed);
             let cleared = self.state.cleared();
             if cleared {
-                inner.items = self.items.clone();
+                inner.items = Arc::clone(&self.injector.items);
             }
-            let notify = Arc::clone(&self.notify);
+            let notify = Arc::clone(&self.injector.notify);
             self.pool.spawn(move || {
                 let outcome = unsafe { inner.run(status, cleared) };
                 drop(inner);
