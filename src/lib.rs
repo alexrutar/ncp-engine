@@ -612,7 +612,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
         };
 
         let pending_update = inner.needs_rescore || inner.needs_sort;
-        let changed = inner.running && !pending_update;
+        let mut changed = false;
 
         let running =
             canceled || pending_update || self.injector.items.count() > inner.item_count();
@@ -620,6 +620,7 @@ impl<T: Sync + Send + 'static> Nucleo<T> {
             inner.running = false;
             if !inner.was_canceled && !self.state.canceled() && !pending_update {
                 self.snapshot.update(&inner);
+                changed = true;
             }
         }
         if running {
