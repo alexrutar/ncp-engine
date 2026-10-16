@@ -18,8 +18,11 @@ pub struct Config {
     pub normalize: bool,
     /// Whether to ignore casing.
     pub ignore_case: bool,
-    /// Whether to provide a bonus to matches by their distance from the start
-    /// of the haystack. The bonus is fairly small compared to the normal gap
+    /// Whether to add a small bonus based on the first selected index in the
+    /// haystack, after scoring the alignment and its internal gaps. Internal
+    /// gap penalties cannot consume this bonus.
+    ///
+    /// The bonus is fairly small compared to the normal gap
     /// penalty to avoid messing with the normal score heuristic. This setting
     /// is not turned on by default and only recommended for autocompletion
     /// usecases where the expectation is that the user is typing the entire

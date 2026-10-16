@@ -114,7 +114,7 @@ use crate::matrix::MatrixSlab;
 /// matching. This scratch memory allows the matcher to guarantee that it will
 /// **never allocate** during matching (with the exception of pushing to the
 /// `indices` vector if there isn't enough capacity). However this scratch
-/// memory is fairly large (around 135KB) so creating a matcher is expensive.
+/// memory is fairly large (around 165KB) so creating a matcher is expensive.
 ///
 /// All `.._match` functions will not compute the indices  of the matched
 /// characters. These should be used to prefilter to filter and rank all
@@ -189,7 +189,7 @@ impl Default for Matcher {
 impl Matcher {
     /// Creates a new matcher instance.
     ///
-    /// This will eagerly allocate a fairly large chunk of heap memory (around 135KB
+    /// This will eagerly allocate a fairly large chunk of heap memory (around 165KB
     /// currently, but subject to change) so matchers should be reused if called often,
     /// such as in a loop.
     pub fn new(config: Config) -> Self {

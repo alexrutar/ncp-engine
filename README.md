@@ -1,7 +1,7 @@
 > [!INFO]
 > This is a fork of [helix-editor/nucleo](https://github.com/helix-editor/nucleo) designed to implement some minor API changes, bug fixes, and many performance improvements.
 
-This is a fork of [`nucleo`](https://crates.io/crates/nucleo) with minor API changes, bug fixes, and many performance improvements.
+This is a fork of [`nucleo`](https://crates.io/crates/nucleo) with minor API changes, bug fixes, scoring improvements, and many performance improvements.
 This crate is primarily used to better support the requirements in [`nucleo-picker`](https://github.com/autobib/nucleo-picker) but other crates which depend on `nucleo` may find this useful as well.
 
 This fork branched at commit hash `5b74652e482f7c07d827f18c6d21e7540c242c69`.
@@ -19,6 +19,7 @@ The current differences are:
   (Unsurprisingly, the bounds are still required to actually call `Nucleo` and `Snapshot` methods.)
 - Added support for targets with 32-bit atomics but no 64-bit atomics.
 - Use Rayon `redue` for worker matching instead of a shared atomic rejection counter to reduce contention between threads.
+- Unified `prefer_prefix` scoring across matching paths using a bounded bonus based on the first selected index.
 
 ## Benchmarks
 

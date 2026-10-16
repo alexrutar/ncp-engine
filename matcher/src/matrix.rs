@@ -12,7 +12,7 @@ const MAX_MATRIX_SIZE: usize = 100 * 1024; // 100*1024 = 100KB
 const MAX_HAYSTACK_LEN: usize = 2048; // 64KB
 const MAX_NEEDLE_LEN: usize = 2048; // 64KB
 
-struct MatrixLayout<C: Char> {
+struct MatrixLayout<C: Char, S> {
     haystack_len: usize,
     needle_len: usize,
     layout: Layout,
@@ -21,17 +21,17 @@ struct MatrixLayout<C: Char> {
     rows_off: usize,
     score_off: usize,
     matrix_off: usize,
-    _phantom: PhantomData<C>,
+    _phantom: PhantomData<(C, S)>,
 }
-impl<C: Char> MatrixLayout<C> {
-    fn new(haystack_len: usize, needle_len: usize) -> MatrixLayout<C> {
+impl<C: Char, S> MatrixLayout<C, S> {
+    fn new(haystack_len: usize, needle_len: usize) -> Self {
         assert!(haystack_len >= needle_len);
         assert!(haystack_len <= u32::MAX as usize);
         let mut layout = Layout::from_size_align(0, 1).unwrap();
         let haystack_layout = Layout::array::<C>(haystack_len).unwrap();
         let bonus_layout = Layout::array::<u8>(haystack_len).unwrap();
         let rows_layout = Layout::array::<u16>(needle_len).unwrap();
-        let score_layout = Layout::array::<ScoreCell>(haystack_len + 1 - needle_len).unwrap();
+        let score_layout = Layout::array::<S>(haystack_len + 1 - needle_len).unwrap();
         let matrix_layout =
             Layout::array::<MatrixCell>((haystack_len + 1 - needle_len) * needle_len).unwrap();
 
@@ -59,18 +59,12 @@ impl<C: Char> MatrixLayout<C> {
     }
     /// # Safety
     ///
-    /// `ptr` must point at an allocated with MARTIX_ALLOC_LAYOUT
+    /// `ptr` must point to an allocation with layout `SLAB_LAYOUT`.
     #[allow(clippy::type_complexity)]
     unsafe fn fieds_from_ptr(
         &self,
         ptr: NonNull<u8>,
-    ) -> (
-        *mut [C],
-        *mut [u8],
-        *mut [u16],
-        *mut [ScoreCell],
-        *mut [MatrixCell],
-    ) {
+    ) -> (*mut [C], *mut [u8], *mut [u16], *mut [S], *mut [MatrixCell]) {
         unsafe {
             let base = ptr.as_ptr();
             let haystack = base.add(self.haystack_off) as *mut C;
@@ -79,7 +73,7 @@ impl<C: Char> MatrixLayout<C> {
             let bonus = slice_from_raw_parts_mut(bonus, self.haystack_len);
             let rows = base.add(self.rows_off) as *mut u16;
             let rows = slice_from_raw_parts_mut(rows, self.needle_len);
-            let cells = base.add(self.score_off) as *mut ScoreCell;
+            let cells = base.add(self.score_off) as *mut S;
             let cells = slice_from_raw_parts_mut(cells, self.haystack_len + 1 - self.needle_len);
             let matrix = base.add(self.matrix_off) as *mut MatrixCell;
             let matrix = slice_from_raw_parts_mut(
@@ -106,12 +100,12 @@ pub(crate) struct ScoreCell {
     pub matched: bool,
 }
 
-pub(crate) struct MatcherDataView<'a, C: Char> {
+pub(crate) struct MatcherDataView<'a, C: Char, S = ScoreCell> {
     pub haystack: &'a mut [C],
     // stored as a separate array instead of struct
     // to avoid padding since char is too large and u8 too small :/
     pub bonus: &'a mut [u8],
-    pub current_row: &'a mut [ScoreCell],
+    pub current_row: &'a mut [S],
     pub row_offs: &'a mut [u16],
     pub matrix_cells: &'a mut [MatrixCell],
 }
@@ -140,6 +134,17 @@ struct MatcherData {
 }
 
 pub(crate) struct MatrixSlab(NonNull<u8>);
+
+// Five u16 continuation scores need 25% more row storage than ScoreCell.
+// Keep the old eligibility limit so score-only and index-producing searches
+// fall back to greedy at the same sizes as before.
+const SLAB_LAYOUT: Layout = match Layout::from_size_align(
+    size_of::<MatcherData>() + size_of::<MatcherData>() / 4,
+    std::mem::align_of::<MatcherData>(),
+) {
+    Ok(layout) => layout,
+    Err(_) => panic!("invalid matcher slab layout"),
+};
 unsafe impl Sync for MatrixSlab {}
 unsafe impl Send for MatrixSlab {}
 impl UnwindSafe for MatrixSlab {}
@@ -147,7 +152,7 @@ impl RefUnwindSafe for MatrixSlab {}
 
 impl MatrixSlab {
     pub fn new() -> Self {
-        let layout = Layout::new::<MatcherData>();
+        let layout = SLAB_LAYOUT;
         // safety: the matrix is never zero sized (hardcoded constants)
         let ptr = unsafe { alloc_zeroed(layout) };
         let Some(ptr) = NonNull::new(ptr) else {
@@ -156,11 +161,11 @@ impl MatrixSlab {
         MatrixSlab(ptr.cast())
     }
 
-    pub(crate) fn alloc<C: Char>(
+    pub(crate) fn alloc<C: Char, S>(
         &mut self,
         haystack_: &[C],
         needle_len: usize,
-    ) -> Option<MatcherDataView<'_, C>> {
+    ) -> Option<MatcherDataView<'_, C, S>> {
         let matrix_width = haystack_.len() + 1 - needle_len;
         let cells = matrix_width * needle_len;
         if cells > MAX_MATRIX_SIZE
@@ -170,12 +175,15 @@ impl MatrixSlab {
         {
             return None;
         }
-        let matrix_layout = MatrixLayout::<C>::new(haystack_.len(), needle_len);
-        if matrix_layout.layout.size() > size_of::<MatcherData>() {
+        let original_layout = MatrixLayout::<C, ScoreCell>::new(haystack_.len(), needle_len);
+        if original_layout.layout.size() > size_of::<MatcherData>() {
             return None;
         }
+        let matrix_layout = MatrixLayout::<C, S>::new(haystack_.len(), needle_len);
+        assert!(matrix_layout.layout.size() <= SLAB_LAYOUT.size());
+        assert!(matrix_layout.layout.align() <= SLAB_LAYOUT.align());
         unsafe {
-            // safely: this allocation is valid for MATRIX_ALLOC_LAYOUT
+            // Safety: the allocation satisfies the checked size and alignment.
             let (haystack, bonus, rows, current_row, matrix_cells) =
                 matrix_layout.fieds_from_ptr(self.0);
             // copy haystack before creating references to ensure we don't create
@@ -196,6 +204,6 @@ impl MatrixSlab {
 
 impl Drop for MatrixSlab {
     fn drop(&mut self) {
-        unsafe { dealloc(self.0.as_ptr(), Layout::new::<MatcherData>()) };
+        unsafe { dealloc(self.0.as_ptr(), SLAB_LAYOUT) };
     }
 }

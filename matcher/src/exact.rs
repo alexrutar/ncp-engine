@@ -3,7 +3,7 @@ use memchr::{Memchr, Memchr2};
 
 use crate::Matcher;
 use crate::chars::{AsciiChar, Char};
-use crate::score::{BONUS_FIRST_CHAR_MULTIPLIER, SCORE_MATCH};
+use crate::score::{BONUS_FIRST_CHAR_MULTIPLIER, SCORE_MATCH, prefix_bonus};
 
 impl Matcher {
     pub(crate) fn substring_match_1_ascii<const INDICES: bool>(
@@ -22,12 +22,18 @@ impl Matcher {
                     .unwrap_or(self.config.initial_char_class);
                 let char_class = AsciiChar(haystack[i]).char_class(&self.config);
                 let bonus = self.config.bonus_for(prev_char_class, char_class);
-                let score = bonus * BONUS_FIRST_CHAR_MULTIPLIER + SCORE_MATCH;
+                let score = bonus * BONUS_FIRST_CHAR_MULTIPLIER
+                    + SCORE_MATCH
+                    + if self.config.prefer_prefix {
+                        prefix_bonus(i)
+                    } else {
+                        0
+                    };
                 if score > max_score {
                     max_pos = i as u32;
                     max_score = score;
                     // can't get better than this
-                    if bonus >= self.config.bonus_boundary_white {
+                    if !self.config.prefer_prefix && bonus >= self.config.bonus_boundary_white {
                         break;
                     }
                 }
@@ -40,12 +46,18 @@ impl Matcher {
                     .map(|i| AsciiChar(haystack[i]).char_class(&self.config))
                     .unwrap_or(self.config.initial_char_class);
                 let bonus = self.config.bonus_for(prev_char_class, char_class);
-                let score = bonus * BONUS_FIRST_CHAR_MULTIPLIER + SCORE_MATCH;
+                let score = bonus * BONUS_FIRST_CHAR_MULTIPLIER
+                    + SCORE_MATCH
+                    + if self.config.prefer_prefix {
+                        prefix_bonus(i)
+                    } else {
+                        0
+                    };
                 if score > max_score {
                     max_pos = i as u32;
                     max_score = score;
                     // can't get better than this
-                    if bonus >= self.config.bonus_boundary_white {
+                    if !self.config.prefer_prefix && bonus >= self.config.bonus_boundary_white {
                         break;
                     }
                 }
@@ -72,6 +84,26 @@ impl Matcher {
         let mut max_score = 0;
         let mut max_pos = 0;
         for i in prefilter {
+            if self.config.prefer_prefix {
+                if haystack[i + prefilter_len..(i + needle.len()).min(haystack.len())]
+                    .iter()
+                    .map(|&c| AsciiChar(c).normalize(&self.config).0)
+                    .eq(needle_without_prefilter.iter().copied())
+                {
+                    let score = self.calculate_score::<false, _, _>(
+                        AsciiChar::cast(haystack),
+                        AsciiChar::cast(needle),
+                        i,
+                        i + needle.len(),
+                        &mut Vec::new(),
+                    );
+                    if score > max_score {
+                        max_pos = i;
+                        max_score = score;
+                    }
+                }
+                continue;
+            }
             let prev_char_class = i
                 .checked_sub(1)
                 .map(|i| AsciiChar(haystack[i]).char_class(&self.config))
@@ -156,6 +188,20 @@ impl Matcher {
         if max_score == 0 {
             let char_class = AsciiChar(needle[0]).char_class(&self.config);
             for i in memmem::find_iter(haystack, needle) {
+                if self.config.prefer_prefix {
+                    let score = self.calculate_score::<false, _, _>(
+                        AsciiChar::cast(haystack),
+                        AsciiChar::cast(needle),
+                        i,
+                        i + needle.len(),
+                        &mut Vec::new(),
+                    );
+                    if score > max_score {
+                        max_pos = i;
+                        max_score = score;
+                    }
+                    continue;
+                }
                 let prev_char_class = i
                     .checked_sub(1)
                     .map(|i| AsciiChar(haystack[i]).char_class(&self.config))
@@ -174,6 +220,12 @@ impl Matcher {
             if max_score == 0 {
                 return None;
             }
+        }
+        if self.config.prefer_prefix {
+            if INDICES {
+                indices.extend(max_pos as u32..(max_pos + needle.len()) as u32);
+            }
+            return Some(max_score);
         }
         let score = self.calculate_score::<INDICES, _, _>(
             AsciiChar::cast(haystack),
@@ -206,12 +258,18 @@ impl Matcher {
             }
             let bonus = self.config.bonus_for(prev_class, char_class);
             prev_class = char_class;
-            let score = bonus * BONUS_FIRST_CHAR_MULTIPLIER + SCORE_MATCH;
+            let score = bonus * BONUS_FIRST_CHAR_MULTIPLIER
+                + SCORE_MATCH
+                + if self.config.prefer_prefix {
+                    prefix_bonus(start + i)
+                } else {
+                    0
+                };
             if score > max_score {
                 max_pos = i as u32;
                 max_score = score;
                 // can't get better than this
-                if bonus >= self.config.bonus_boundary_white {
+                if !self.config.prefer_prefix && bonus >= self.config.bonus_boundary_white {
                     break;
                 }
             }
@@ -249,6 +307,26 @@ impl Matcher {
             }
             let bonus = self.config.bonus_for(prev_class, char_class);
             prev_class = char_class;
+            if self.config.prefer_prefix {
+                if haystack[start + i + 1..start + i + needle.len()]
+                    .iter()
+                    .map(|c| c.normalize(&self.config))
+                    .eq(needle[1..].iter().copied())
+                {
+                    let score = self.calculate_score::<false, _, _>(
+                        haystack,
+                        needle,
+                        start + i,
+                        start + i + needle.len(),
+                        &mut Vec::new(),
+                    );
+                    if score > max_score {
+                        max_pos = i;
+                        max_score = score;
+                    }
+                }
+                continue;
+            }
             let score = bonus * BONUS_FIRST_CHAR_MULTIPLIER + SCORE_MATCH;
             if score > max_score
                 && haystack[start + i + 1..start + i + needle.len()]
@@ -268,6 +346,12 @@ impl Matcher {
             return None;
         }
 
+        if self.config.prefer_prefix {
+            if INDICES {
+                indices.extend((start + max_pos) as u32..(start + max_pos + needle.len()) as u32);
+            }
+            return Some(max_score);
+        }
         let score = self.calculate_score::<INDICES, _, _>(
             haystack,
             needle,

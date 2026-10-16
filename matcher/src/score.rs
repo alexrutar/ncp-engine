@@ -6,10 +6,21 @@ use crate::{Config, Matcher};
 pub(crate) const SCORE_MATCH: u16 = 16;
 pub(crate) const PENALTY_GAP_START: u16 = 3;
 pub(crate) const PENALTY_GAP_EXTENSION: u16 = 1;
-/// If the prefer_prefix option is enabled we want to penalize
-/// the initial gap. The prefix should not be too much  
+/// Scale the leading-gap cost to keep prefix preference a small adjustment.
 pub(crate) const PREFIX_BONUS_SCALE: u16 = 2;
 pub(crate) const MAX_PREFIX_BONUS: u16 = BONUS_BOUNDARY;
+
+/// A terminal bonus for the first selected index in the original haystack.
+#[inline]
+pub(crate) fn prefix_bonus(start: usize) -> u16 {
+    if start == 0 {
+        return MAX_PREFIX_BONUS;
+    }
+    let budget = u64::from(MAX_PREFIX_BONUS) * u64::from(PREFIX_BONUS_SCALE);
+    let penalty = u64::from(PENALTY_GAP_START)
+        .saturating_add(((start - 1) as u64).saturating_mul(u64::from(PENALTY_GAP_EXTENSION)));
+    (budget.saturating_sub(penalty) / u64::from(PREFIX_BONUS_SCALE)) as u16
+}
 
 // We prefer matches at the beginning of a word, but the bonus should not be
 // too great to prevent the longer acronym matches from always winning over
@@ -145,13 +156,7 @@ impl Matcher {
             prev_class = class;
         }
         if self.config.prefer_prefix {
-            if start != 0 {
-                let penalty = PENALTY_GAP_START
-                    + PENALTY_GAP_START * (start - 1).min(u16::MAX as usize) as u16;
-                score += MAX_PREFIX_BONUS.saturating_sub(penalty / PREFIX_BONUS_SCALE);
-            } else {
-                score += MAX_PREFIX_BONUS;
-            }
+            score += prefix_bonus(start);
         }
         score
     }

@@ -27,6 +27,7 @@ fn test_utf32str_ascii() {
 }
 
 #[test]
+#[cfg(all(feature = "unicode-normalization", feature = "unicode-segmentation"))]
 fn test_grapheme_canonicalization() {
     // ascii is preserved
     let s = Utf32String::from("ab");

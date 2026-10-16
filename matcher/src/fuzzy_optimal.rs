@@ -3,10 +3,12 @@ use std::cmp::max;
 use crate::chars::{Char, CharClass};
 use crate::matrix::{MatcherDataView, MatrixCell, ScoreCell};
 use crate::score::{
-    BONUS_BOUNDARY, BONUS_CONSECUTIVE, BONUS_FIRST_CHAR_MULTIPLIER, MAX_PREFIX_BONUS,
-    PENALTY_GAP_EXTENSION, PENALTY_GAP_START, PREFIX_BONUS_SCALE, SCORE_MATCH,
+    BONUS_BOUNDARY, BONUS_CONSECUTIVE, BONUS_FIRST_CHAR_MULTIPLIER, PENALTY_GAP_EXTENSION,
+    PENALTY_GAP_START, SCORE_MATCH, prefix_bonus,
 };
 use crate::{Config, Matcher};
+
+mod prefix;
 
 impl Matcher {
     pub(crate) fn fuzzy_match_optimal<const INDICES: bool, H: Char + PartialEq<N>, N: Char>(
@@ -21,39 +23,32 @@ impl Matcher {
         // construct a matrix (and copy the haystack), the matrix and haystack size are bounded
         // to avoid the slow O(mn) time complexity for large inputs. Furthermore, it allows
         // us to treat needle indices as u16
-        let Some(mut matrix) = self.slab.alloc(&haystack[start..end], needle.len()) else {
-            return self.fuzzy_match_greedy_::<INDICES, H, N>(
-                haystack, needle, start, greedy_end, indices,
-            );
-        };
-
         let prev_class = start
             .checked_sub(1)
             .map(|i| haystack[i].char_class(&self.config))
             .unwrap_or(self.config.initial_char_class);
-        let matched = matrix.setup::<INDICES, _>(needle, prev_class, &self.config, start as u32);
-        // this only happened with unicode haystacks, for ASCII the prefilter handles all rejects
-        if !matched {
-            assert!(
-                !N::ASCII || !H::ASCII,
-                "Non-match should have been caught by prefilter. Maybe `needle` is not normalized?"
+        // When every possible start has zero bonus, retain the ordinary scorer
+        // and its tie-breaking rather than paying for protected-prefix states.
+        if self.config.prefer_prefix && prefix_bonus(start) != 0 {
+            if let Some(mut matrix) = self.slab.alloc(&haystack[start..end], needle.len()) {
+                return matrix.find_prefixed::<INDICES, _>(
+                    needle,
+                    prev_class,
+                    &self.config,
+                    start,
+                    indices,
+                );
+            }
+        } else if let Some(mut matrix) = self.slab.alloc(&haystack[start..end], needle.len()) {
+            return matrix.find_optimal::<INDICES, _>(
+                needle,
+                prev_class,
+                &self.config,
+                start,
+                indices,
             );
-            return None;
         }
-
-        // populate the matrix and find the best score
-        let matrix_len = matrix.populate_matrix::<INDICES, _>(needle);
-        let last_row_off = matrix.row_offs[needle.len() - 1];
-        let relative_last_row_off = last_row_off as usize + 1 - needle.len();
-        let (match_end, match_score_cell) = matrix.current_row[relative_last_row_off..]
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, cell)| cell.score)
-            .expect("there must be atleast one match");
-        if INDICES {
-            matrix.reconstruct_optimal_path(match_end as u16, indices, matrix_len, start as u32);
-        }
-        Some(match_score_cell.score)
+        self.fuzzy_match_greedy_::<INDICES, H, N>(haystack, needle, start, greedy_end, indices)
     }
 }
 
@@ -108,13 +103,49 @@ fn p_score(prev_p_score: u16, prev_m_score: u16) -> (u16, bool) {
 }
 
 impl<H: Char> MatcherDataView<'_, H> {
-    fn setup<const INDICES: bool, N: Char>(
+    fn find_optimal<const INDICES: bool, N: Char>(
         &mut self,
         needle: &[N],
-        mut prev_class: CharClass,
+        prev_class: CharClass,
         config: &Config,
-        start: u32,
-    ) -> bool
+        start: usize,
+        indices: &mut Vec<u32>,
+    ) -> Option<u16>
+    where
+        H: PartialEq<N>,
+    {
+        if !self.setup(needle, prev_class, config) {
+            return None;
+        }
+        Self::score_row::<true, INDICES, _>(
+            self.current_row,
+            self.matrix_cells,
+            self.haystack,
+            self.bonus,
+            0,
+            self.row_offs[1],
+            0,
+            needle[0],
+            needle[1],
+        );
+        let matrix_len = self.populate_matrix::<INDICES, _>(needle);
+        let last_row_off = self.row_offs[needle.len() - 1];
+        let relative_last_row_off = last_row_off as usize + 1 - needle.len();
+        let (match_end, cell) = self.current_row[relative_last_row_off..]
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, cell)| cell.score)
+            .expect("there must be at least one match");
+        let score = cell.score;
+        if INDICES {
+            self.reconstruct_optimal_path(match_end as u16, indices, matrix_len, start as u32);
+        }
+        Some(score)
+    }
+}
+
+impl<H: Char, S> MatcherDataView<'_, H, S> {
+    fn setup<N: Char>(&mut self, needle: &[N], mut prev_class: CharClass, config: &Config) -> bool
     where
         H: PartialEq<N>,
     {
@@ -154,31 +185,11 @@ impl<H: Char> MatcherDataView<'_, H> {
             return false;
         }
         debug_assert_eq!(self.row_offs[0], 0);
-        Self::score_row::<true, INDICES, _>(
-            self.current_row,
-            self.matrix_cells,
-            self.haystack,
-            self.bonus,
-            0,
-            self.row_offs[1],
-            0,
-            needle[0],
-            needle[1],
-            if config.prefer_prefix {
-                if start == 0 {
-                    MAX_PREFIX_BONUS * PREFIX_BONUS_SCALE
-                } else {
-                    (MAX_PREFIX_BONUS * PREFIX_BONUS_SCALE - PENALTY_GAP_START).saturating_sub(
-                        (start - 1).min(u16::MAX as u32) as u16 * PENALTY_GAP_EXTENSION,
-                    )
-                }
-            } else {
-                0
-            },
-        );
         true
     }
+}
 
+impl<H: Char> MatcherDataView<'_, H> {
     #[allow(clippy::too_many_arguments)]
     fn score_row<const FIRST_ROW: bool, const INDICES: bool, N: Char>(
         current_row: &mut [ScoreCell],
@@ -190,7 +201,6 @@ impl<H: Char> MatcherDataView<'_, H> {
         needle_idx: u16,
         needle_char: N,
         next_needle_char: N,
-        mut prefix_bonus: u16,
     ) where
         H: PartialEq<N>,
     {
@@ -207,19 +217,15 @@ impl<H: Char> MatcherDataView<'_, H> {
         for (((&c, bonus), score_cell), matrix_cell) in skipped_col_iter {
             let (p_score, p_matched) = p_score(prev_p_score, prev_m_score);
             let m_cell = if FIRST_ROW {
-                let cell = if c == needle_char {
+                if c == needle_char {
                     ScoreCell {
-                        score: *bonus as u16 * BONUS_FIRST_CHAR_MULTIPLIER
-                            + SCORE_MATCH
-                            + prefix_bonus / PREFIX_BONUS_SCALE,
+                        score: *bonus as u16 * BONUS_FIRST_CHAR_MULTIPLIER + SCORE_MATCH,
                         matched: false,
                         consecutive_bonus: *bonus,
                     }
                 } else {
                     UNMATCHED
-                };
-                prefix_bonus = prefix_bonus.saturating_sub(PENALTY_GAP_EXTENSION);
-                cell
+                }
             } else {
                 *score_cell
             };
@@ -237,19 +243,15 @@ impl<H: Char> MatcherDataView<'_, H> {
         for (((c, bonus), score_cell), matrix_cell) in col_iter {
             let (p_score, p_matched) = p_score(prev_p_score, prev_m_score);
             let m_cell = if FIRST_ROW {
-                let cell = if c[0] == needle_char {
+                if c[0] == needle_char {
                     ScoreCell {
-                        score: bonus[0] as u16 * BONUS_FIRST_CHAR_MULTIPLIER
-                            + SCORE_MATCH
-                            + prefix_bonus / PREFIX_BONUS_SCALE,
+                        score: bonus[0] as u16 * BONUS_FIRST_CHAR_MULTIPLIER + SCORE_MATCH,
                         matched: false,
                         consecutive_bonus: bonus[0],
                     }
                 } else {
                     UNMATCHED
-                };
-                prefix_bonus = prefix_bonus.saturating_sub(PENALTY_GAP_EXTENSION);
-                cell
+                }
             } else {
                 *score_cell
             };
@@ -288,7 +290,6 @@ impl<H: Char> MatcherDataView<'_, H> {
                 needle_idx as u16 + 1,
                 needle_char,
                 next_needle_char,
-                0,
             );
             let len = self.current_row.len() + needle_idx + 1 - row_off as usize;
             matrix_cells = &mut matrix_cells[len..];

@@ -1,3 +1,9 @@
+#![cfg(all(
+    feature = "unicode-casefold",
+    feature = "unicode-normalization",
+    feature = "unicode-segmentation"
+))]
+
 use crate::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
 use crate::{Matcher, Utf32String};
 

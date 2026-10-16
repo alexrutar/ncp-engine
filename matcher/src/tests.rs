@@ -1,4 +1,5 @@
-use crate::chars::Char;
+use crate::chars::{AsciiChar, Char};
+#[cfg(feature = "unicode-normalization")]
 use crate::pattern::{CaseMatching, Normalization, Pattern};
 use crate::score::{
     BONUS_BOUNDARY, BONUS_CAMEL123, BONUS_CONSECUTIVE, BONUS_FIRST_CHAR_MULTIPLIER, BONUS_NON_WORD,
@@ -63,7 +64,12 @@ fn assert_matches(
             println!("{matched_indices:?}");
             let match_chars: Vec<_> = matched_indices
                 .iter()
-                .map(|&i| haystack.get(i).normalize(&matcher.config))
+                .map(|&i| match haystack {
+                    Utf32Str::Ascii(bytes) => {
+                        AsciiChar(bytes[i as usize]).normalize(&matcher.config).0 as char
+                    }
+                    Utf32Str::Unicode(chars) => chars[i as usize].normalize(&matcher.config),
+                })
                 .collect();
             let needle_chars: Vec<_> = needle.chars().collect();
 
@@ -495,6 +501,7 @@ fn test_fuzzy_case_sensitive() {
 }
 
 #[test]
+#[cfg(all(feature = "unicode-normalization", feature = "unicode-casefold"))]
 fn test_normalize() {
     assert_matches(
         &[FuzzyGreedy, FuzzyOptimal],
@@ -768,6 +775,196 @@ fn test_prefer_prefix() {
 }
 
 #[test]
+fn prefix_score_uses_selected_start() {
+    use crate::pattern::{CaseMatching, Normalization, Pattern};
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    for prefer_prefix in [false, true] {
+        matcher.config.prefer_prefix = prefer_prefix;
+        for query in ["lens", "'lens"] {
+            let pattern = Pattern::parse(query, CaseMatching::default(), Normalization::Never);
+            // The unused initial 'l' must not affect the suffix's bonus.
+            for (candidate, start, bonus) in [
+                ("code_lens", 5, 4),
+                ("lsp_code_lens", 9, 2),
+                ("xsp_code_lens", 9, 2),
+                ("xxxxxxxxxxxxx_lens", 14, 0),
+            ] {
+                let haystack = Utf32Str::Ascii(candidate.as_bytes());
+                let expected = Some(104 + if prefer_prefix { bonus } else { 0 });
+                let mut indices = Vec::new();
+                assert_eq!(pattern.score(haystack, &mut matcher), expected);
+                assert_eq!(
+                    pattern.indices(haystack, &mut matcher, &mut indices),
+                    expected
+                );
+                assert_eq!(indices, [start, start + 1, start + 2, start + 3]);
+            }
+        }
+    }
+}
+
+#[test]
+fn prefix_bonus_survives_saturating_gaps() {
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let needle = Utf32Str::Ascii(b"ab");
+    for candidate in [
+        format!("a_a{}b", "x".repeat(50)),
+        format!("a{}b", "x".repeat(5000)),
+        format!("a{}b", "x".repeat(65536)), // Greedy fallback.
+    ] {
+        let haystack = Utf32Str::Ascii(candidate.as_bytes());
+        matcher.config.prefer_prefix = false;
+        assert_eq!(matcher.fuzzy_match(haystack, needle), Some(16));
+
+        // Both starts lose their structural score in the gap; the earlier start
+        // must still win with its full prefix bonus, including during traceback.
+        matcher.config.prefer_prefix = true;
+        let mut indices = Vec::new();
+        assert_eq!(matcher.fuzzy_match(haystack, needle), Some(24));
+        assert_eq!(
+            matcher.fuzzy_indices(haystack, needle, &mut indices),
+            Some(24)
+        );
+        assert_eq!(indices, [0, candidate.len() as u32 - 1]);
+    }
+}
+
+#[test]
+fn protected_floor_matches_exhaustive_alignments() {
+    fn alignment_score(config: &Config, haystack: &[char], indices: &[u32]) -> u16 {
+        let bonus = |pos: usize| {
+            let prev = pos.checked_sub(1).map_or(config.initial_char_class, |i| {
+                haystack[i].char_class(config)
+            });
+            config.bonus_for(prev, haystack[pos].char_class(config))
+        };
+        let start = indices[0] as usize;
+        let mut carry = bonus(start);
+        let mut score = SCORE_MATCH + 2 * carry;
+        for pair in indices.windows(2) {
+            let gap = pair[1] - pair[0] - 1;
+            let mut b = bonus(pair[1] as usize);
+            if gap == 0 {
+                if b >= BONUS_BOUNDARY {
+                    carry = carry.max(b);
+                }
+                b = b.max(carry).max(BONUS_CONSECUTIVE);
+            } else {
+                score = score.saturating_sub(PENALTY_GAP_START + (gap as u16 - 1));
+                carry = b;
+            }
+            score += SCORE_MATCH + b;
+        }
+        score
+            + [8, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1]
+                .get(start)
+                .copied()
+                .unwrap_or(0)
+    }
+
+    fn enumerate(
+        config: &Config,
+        haystack: &[char],
+        needle: &[char],
+        indices: &mut Vec<u32>,
+        best: &mut Option<u16>,
+    ) {
+        if indices.len() == needle.len() {
+            let score = alignment_score(config, haystack, indices);
+            *best = Some(best.unwrap_or(0).max(score));
+            return;
+        }
+        let start = indices.last().map_or(0, |&i| i as usize + 1);
+        for i in start..haystack.len() {
+            if haystack[i].normalize(config) == needle[indices.len()] {
+                indices.push(i as u32);
+                enumerate(config, haystack, needle, indices, best);
+                indices.pop();
+            }
+        }
+    }
+
+    let mut cases = vec![
+        ("aB _abBBAaA_bbbba".to_owned(), "abbbaabbba".to_owned()),
+        (
+            "_ba /a bbaAbb/ / /ab_aaba".to_owned(),
+            "baabbabba".to_owned(),
+        ),
+        (
+            format!("a_a{}b_b{}c", "x".repeat(50), "x".repeat(50)),
+            "abc".to_owned(),
+        ),
+        (format!("_a___a{}b", "x".repeat(50)), "ab".to_owned()),
+        ("é_你_你好".to_owned(), "你好".to_owned()),
+        ("你_好_世".to_owned(), "你界世".to_owned()),
+    ];
+    // Enumerate alignments independently of the DP, including repeated starts,
+    // competing continuation bonuses, and haystacks that reuse the same slab.
+    let mut seed = 92u64;
+    for _ in 0..2048 {
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed as usize
+        };
+        let haystack = (0..4 + next() % 8)
+            .map(|_| b"abAB_/ "[next() % 7] as char)
+            .collect();
+        let needle = (0..2 + next() % 3)
+            .map(|_| b"ab"[next() % 2] as char)
+            .collect();
+        cases.push((haystack, needle));
+    }
+    for config in [Config::DEFAULT, Config::DEFAULT.match_paths()] {
+        let mut matcher = Matcher::new(config);
+        matcher.config.prefer_prefix = true;
+        // Without case folding, exercise the same recurrence case-sensitively.
+        matcher.config.ignore_case = cfg!(feature = "unicode-casefold");
+        for (candidate, query) in &cases {
+            let chars: Vec<_> = candidate.chars().collect();
+            let needle_chars: Vec<_> = query.chars().collect();
+            let needle = Utf32Str::Unicode(&needle_chars);
+            let mut expected = None;
+            enumerate(
+                &matcher.config,
+                &chars,
+                &needle_chars,
+                &mut Vec::new(),
+                &mut expected,
+            );
+            let mut forms = vec![Utf32Str::Unicode(&chars)];
+            let ascii_needle = query.is_ascii().then(|| Utf32Str::Ascii(query.as_bytes()));
+            if candidate.is_ascii() {
+                forms.push(Utf32Str::Ascii(candidate.as_bytes()));
+            }
+            for haystack in forms {
+                let needle = ascii_needle.unwrap_or(needle);
+                matcher.config.prefer_prefix = false;
+                matcher.fuzzy_match(haystack, needle);
+                matcher.config.prefer_prefix = true;
+                let mut indices = vec![u32::MAX];
+                let score = matcher.fuzzy_match(haystack, needle);
+                assert_eq!(score, expected, "{candidate:?} / {query:?}");
+                assert_eq!(matcher.fuzzy_indices(haystack, needle, &mut indices), score);
+                assert_eq!(indices.remove(0), u32::MAX);
+                if let Some(score) = score {
+                    assert_eq!(indices.len(), needle.len());
+                    assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
+                    for (&index, &c) in indices.iter().zip(&needle_chars) {
+                        assert_eq!(chars[index as usize].normalize(&matcher.config), c);
+                    }
+                    assert_eq!(alignment_score(&matcher.config, &chars, &indices), score);
+                } else {
+                    assert!(indices.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_single_char_needle() {
     assert_matches(
         &[FuzzyOptimal],
@@ -782,6 +979,7 @@ fn test_single_char_needle() {
             BONUS_FIRST_CHAR_MULTIPLIER * BONUS_CAMEL123,
         )],
     );
+    #[cfg(feature = "unicode-casefold")]
     assert_matches(
         &[FuzzyOptimal],
         false,
@@ -798,16 +996,17 @@ fn test_single_char_needle() {
 }
 
 #[test]
+#[cfg(feature = "unicode-normalization")]
 fn umlaut() {
     let paths = ["be", "bë"];
     let mut matcher = Matcher::new(Config::DEFAULT);
-    let matches = Pattern::parse("ë", CaseMatching::Ignore, Normalization::Smart)
+    let matches = Pattern::parse("ë", CaseMatching::default(), Normalization::Smart)
         .match_list(paths, &mut matcher);
     assert_eq!(matches.len(), 1);
-    let matches = Pattern::parse("e", CaseMatching::Ignore, Normalization::Never)
+    let matches = Pattern::parse("e", CaseMatching::default(), Normalization::Never)
         .match_list(paths, &mut matcher);
     assert_eq!(matches.len(), 1);
-    let matches = Pattern::parse("e", CaseMatching::Ignore, Normalization::Smart)
+    let matches = Pattern::parse("e", CaseMatching::default(), Normalization::Smart)
         .match_list(paths, &mut matcher);
     assert_eq!(matches.len(), 2);
 }
