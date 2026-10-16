@@ -1,0 +1,71 @@
+{
+  "sampling": "Smallest SHA-256(seed || UTF-8 line), ordered by hash; seed = ncp-matching-v1 followed by NUL",
+  "sample_size": 100000,
+  "datasets": [
+    {
+      "name": "chromium",
+      "url": "https://gist.github.com/ii14/637689ef8d071824e881a78044670310/raw/dc1dbc859daa38b62f4b9a69dec1fc599e4735e7/data.txt",
+      "provenance": "Mixed repository path snapshot labeled Chromium by saghen/frizbee at 5fa0fa4cb05ad64178af8f21038e8ae135419438; only /chromium/ paths are retained; https://github.com/saghen/frizbee/blob/5fa0fa4cb05ad64178af8f21038e8ae135419438/benches/data/download.sh",
+      "cache": "chromium.txt",
+      "sha256": "46163ffa59aa350386dfa8447a898660a5ff02054cbcae7d1d3d96943582bbc3",
+      "format": "chromium-paths",
+      "outputs": [
+        {
+          "file": "chromium.txt",
+          "rows": 100000,
+          "sha256": "2315e9dca559847355ee0c29b736e6620eac0b89cc8be336d960b033b31699d6"
+        },
+        {
+          "file": "chromium-full.txt",
+          "rows": 456478,
+          "sha256": "87092e8adbcb75d518d770b20fc3598c7d60f0693c171edf5b8ece4c3fca7c7d"
+        }
+      ]
+    },
+    {
+      "name": "wikipedia-de",
+      "url": "https://dumps.wikimedia.org/other/pagetitles/20261011/dewiki-20261011-all-titles-in-ns-0.gz",
+      "provenance": "German Wikipedia, main-namespace titles (including redirects), 2026-10-11; https://meta.wikimedia.org/wiki/Data_dumps/What's_available_for_download",
+      "cache": "dewiki-20261011.gz",
+      "sha256": "22034405923b965362b52d8154073da00f65674aab4b2900ede9349c22be5264",
+      "format": "wikipedia-titles-gzip",
+      "outputs": [
+        {
+          "file": "wikipedia-de.txt",
+          "rows": 100000,
+          "sha256": "d1777635e7cfded05eca6934627ff8109df3da91eeaf1896795d19ca1c45c842"
+        }
+      ]
+    },
+    {
+      "name": "wikipedia-ja",
+      "url": "https://dumps.wikimedia.org/other/pagetitles/20261011/jawiki-20261011-all-titles-in-ns-0.gz",
+      "provenance": "Japanese Wikipedia, main-namespace titles (including redirects), 2026-10-11; https://meta.wikimedia.org/wiki/Data_dumps/What's_available_for_download",
+      "cache": "jawiki-20261011.gz",
+      "sha256": "c375e719a31e2a28f6154bc5496d696ba52b82dfb6e01fe2fd2a3053715b35d8",
+      "format": "wikipedia-titles-gzip",
+      "outputs": [
+        {
+          "file": "wikipedia-ja.txt",
+          "rows": 100000,
+          "sha256": "c56dcb86996bbffa6f726802216a767db82b2718f5907c0073398f1d639cb0c7"
+        }
+      ]
+    },
+    {
+      "name": "wikipedia-ar",
+      "url": "https://dumps.wikimedia.org/other/pagetitles/20261011/arwiki-20261011-all-titles-in-ns-0.gz",
+      "provenance": "Arabic Wikipedia, main-namespace titles (including redirects), 2026-10-11; https://meta.wikimedia.org/wiki/Data_dumps/What's_available_for_download",
+      "cache": "arwiki-20261011.gz",
+      "sha256": "7f2e5f65958a47ebcb7e101cf37140ad57171bc4f143437adaf4a35c6b0fd5a1",
+      "format": "wikipedia-titles-gzip",
+      "outputs": [
+        {
+          "file": "wikipedia-ar.txt",
+          "rows": 100000,
+          "sha256": "37a26370cdc477e8f52f2c008c2fed3027b970c70cfa63dd7f6c857d0af9f6db"
+        }
+      ]
+    }
+  ]
+}

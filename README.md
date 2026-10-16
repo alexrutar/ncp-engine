@@ -19,3 +19,19 @@ The current differences are:
   (Unsurprisingly, the bounds are still required to actually call `Nucleo` and `Snapshot` methods.)
 - Added support for targets with 32-bit atomics but no 64-bit atomics.
 - Use Rayon `redue` for worker matching instead of a shared atomic rejection counter to reduce contention between threads.
+
+## Benchmarks
+
+In order to download the benchmark data, run `python3 benches/prepare_data.py`.
+This requires Python 3.9+ and curl.
+
+To run benchmarks, run:
+
+```sh
+cargo bench --bench insertion
+cargo bench --bench matching
+```
+
+Matching benchmarks cover corpus scoring, complete engine searches, append/backspace edits, and newly injected items.
+By default, benchmarks run with 100,000 items and worker counts of 1 and up to 8.
+This can be overridden with `NCP_BENCH_SIZE=10000|100000|full` and `NCP_BENCH_THREADS=1,4`.
