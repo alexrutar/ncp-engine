@@ -1,7 +1,6 @@
 use std::cell::UnsafeCell;
-use std::mem::take;
 use std::sync::Arc;
-use std::sync::atomic::{self, AtomicBool, AtomicU32};
+use std::sync::atomic::{self, AtomicBool};
 
 use ncp_matcher::Config;
 use parking_lot::Mutex;
@@ -127,7 +126,7 @@ impl<T: Sync + Send + 'static> Worker<T> {
         (pool, worker)
     }
 
-    unsafe fn process_new_items(&mut self, unmatched: &AtomicU32) {
+    unsafe fn process_new_items(&mut self) -> usize {
         unsafe {
             let matchers = &self.matchers;
             let pattern = &self.pattern;
@@ -142,33 +141,48 @@ impl<T: Sync + Send + 'static> Worker<T> {
                 false
             });
             let new_snapshot = self.items.par_snapshot(self.last_snapshot);
-            if new_snapshot.end() != self.last_snapshot {
-                let end = new_snapshot.end();
-                let in_flight = Mutex::new(&mut self.in_flight);
-                let items = new_snapshot.map(|(idx, item)| {
-                    let Some(item) = item else {
-                        in_flight.lock().push(idx);
-                        unmatched.fetch_add(1, atomic::Ordering::Relaxed);
-                        return Match {
-                            score: 0,
-                            idx: u32::MAX,
-                        };
-                    };
-                    if self.canceled.load(atomic::Ordering::Relaxed) {
-                        return Match { score: 0, idx };
-                    }
-                    let Some(score) = pattern.score(item.matcher_columns, matchers.get()) else {
-                        unmatched.fetch_add(1, atomic::Ordering::Relaxed);
-                        return Match {
-                            score: 0,
-                            idx: u32::MAX,
-                        };
-                    };
-                    Match { score, idx }
-                });
-                self.matches.par_extend(items);
-                self.last_snapshot = end;
+            if new_snapshot.end() == self.last_snapshot {
+                return 0;
             }
+            let end = new_snapshot.end();
+            let start = self.matches.len();
+            let len = new_snapshot.len();
+            self.matches.reserve(len);
+            let in_flight = Mutex::new(&mut self.in_flight);
+            let items = new_snapshot.map(|(idx, item)| {
+                let Some(item) = item else {
+                    in_flight.lock().push(idx);
+                    return Match {
+                        score: 0,
+                        idx: u32::MAX,
+                    };
+                };
+                if self.canceled.load(atomic::Ordering::Relaxed) {
+                    // Retain unprocessed indices for the next query update.
+                    return Match { score: 0, idx };
+                }
+                let Some(score) = pattern.score(item.matcher_columns, matchers.get()) else {
+                    return Match {
+                        score: 0,
+                        idx: u32::MAX,
+                    };
+                };
+                Match { score, idx }
+            });
+            // Initialize disjoint output slots once while reducing local counts.
+            let unmatched = items
+                .zip_eq(self.matches.spare_capacity_mut()[..len].par_iter_mut())
+                .map(|(match_, slot)| {
+                    slot.write(match_);
+                    usize::from(match_.idx == u32::MAX)
+                })
+                .sum::<usize>();
+            // SAFETY: The indexed zip writes every one of the `len` reserved
+            // slots, even after cancellation. The reduction joins all writers
+            // before exposing those entries. A panic leaves the length unchanged.
+            self.matches.set_len(start + len);
+            self.last_snapshot = end;
+            unmatched
         }
     }
 
@@ -236,41 +250,42 @@ impl<T: Sync + Send + 'static> Worker<T> {
                 self.reset_matches();
             }
 
-            let mut unmatched = AtomicU32::new(0);
-            if pattern_status != pattern::Status::Unchanged && !self.matches.is_empty() {
+            let unmatched = if pattern_status != pattern::Status::Unchanged
+                && !self.matches.is_empty()
+            {
                 self.process_new_items_trivial();
                 let matchers = &self.matchers;
                 let pattern = &self.pattern;
                 self.matches
                     .par_iter_mut()
                     .take_any_while(|_| !self.canceled.load(atomic::Ordering::Relaxed))
-                    .for_each(|match_| {
+                    .map(|match_| {
                         if match_.idx == u32::MAX {
                             debug_assert_eq!(match_.score, 0);
-                            unmatched.fetch_add(1, atomic::Ordering::Relaxed);
-                            return;
+                            return 1;
                         }
                         // safety: in-flight items are never added to the matches
                         let item = self.items.get_unchecked(match_.idx);
                         if let Some(score) = pattern.score(item.matcher_columns, matchers.get()) {
                             match_.score = score;
+                            0
                         } else {
-                            unmatched.fetch_add(1, atomic::Ordering::Relaxed);
                             match_.score = 0;
                             match_.idx = u32::MAX;
+                            1
                         }
-                    });
+                    })
+                    .sum::<usize>()
             } else {
-                self.process_new_items(&unmatched);
-            }
+                self.process_new_items()
+            };
 
             let canceled = self.sort_matches();
             if canceled {
                 self.was_canceled = true;
                 RunOutcome::Canceled
             } else {
-                self.matches
-                    .truncate(self.matches.len() - take(unmatched.get_mut()) as usize);
+                self.matches.truncate(self.matches.len() - unmatched);
                 RunOutcome::Completed
             }
         }

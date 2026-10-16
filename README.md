@@ -1,8 +1,8 @@
-> [!WARNING]
-> This is an unstable fork of [helix-editor/nucleo](https://github.com/helix-editor/nucleo).
-> You probably don't want to use this crate; there are no plans for stable releases and could change substantially between minor version changes.
+> [!INFO]
+> This is a fork of [helix-editor/nucleo](https://github.com/helix-editor/nucleo) designed to implement some minor API changes, bug fixes, and many performance improvements.
 
-This is a fork of [`nucleo`](https://crates.io/crates/nucleo) which has some modifications to better support the requirements in [`nucleo-picker`](https://github.com/autobib/nucleo-picker).
+This is a fork of [`nucleo`](https://crates.io/crates/nucleo) with minor API changes, bug fixes, and many performance improvements.
+This crate is primarily used to better support the requirements in [`nucleo-picker`](https://github.com/autobib/nucleo-picker) but other crates which depend on `nucleo` may find this useful as well.
 
 This fork branched at commit hash `5b74652e482f7c07d827f18c6d21e7540c242c69`.
 
@@ -16,5 +16,6 @@ The current differences are:
 - Added `DetachedItem`, an owned, cheaply cloneable item handle.
 - Added conversion from `Utf32Str` to `Utf32String`.
 - Removed the `Send + Sync + 'static` bounds from the `Nucleo` and `Snapshot` type declarations.
-  (The bounds are still required to actually call `Nucleo` and `Snapshot` methods.)
+  (Unsurprisingly, the bounds are still required to actually call `Nucleo` and `Snapshot` methods.)
 - Added support for targets with 32-bit atomics but no 64-bit atomics.
+- Use Rayon `redue` for worker matching instead of a shared atomic rejection counter to reduce contention between threads.
