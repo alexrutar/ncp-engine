@@ -23,8 +23,35 @@ The current differences are:
 
 ## Benchmarks
 
-In order to download the benchmark data, run `python3 benches/prepare_data.py`.
-This requires Python 3.9+ and curl.
+### Comparison with `Nucleo`.
+
+Bencharks run on Apple M4 Pro, macOS 15.7.7 (arm64); `rustc 1.99.0` using Criterion (20 samples, 0.5s warm-up and 2s measurement target per case).
+Benchmarks are run against data loaded by the script `benches/prepare_data.py`.
+
+| Workload | Workers | Nucleo | ncp-engine | Speedup |
+| :--- | ---: | ---: | ---: | ---: |
+| Score Chromium paths: `linux` | 1 | 8.329 ms | 8.300 ms | 1.00× |
+| Search Chromium paths: `src` | 1 | 30.895 ms | 29.786 ms | 1.04× |
+| Search Chromium paths: `src` | 8 | 5.491 ms | 4.757 ms | 1.15× |
+| Search Chromium paths: no match | 8 | 6.455 ms | 0.699 ms | 9.24× |
+| Append to Chromium query: `li` → `linux` | 8 | 4.740 ms | 1.729 ms | 2.74× |
+| Search German titles: `munchen` | 8 | 6.556 ms | 0.778 ms | 8.43× |
+| Search Japanese titles: `東京` | 8 | 6.615 ms | 0.871 ms | 7.60× |
+
+To reproduce the above comparison table on your own device, run
+
+```sh
+python3 benches/prepare_data.py
+python3 benches/compare.py > comparison.md
+```
+
+`benches/compare.py` accepts a few options:
+
+- `--current <revision>` to select another commit
+- `--size 10000` for a smaller corpus
+- `--threads 4` to set the parallel worker count (default: up to 8).
+
+### Full benchmark suite
 
 To run benchmarks, run:
 
