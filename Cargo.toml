@@ -2,7 +2,7 @@
 name = "ncp-engine"
 description = "High performance fuzzy matcher engine"
 authors = ["Pascal Kuthe <pascalkuthe@pm.me>", "Alex Rutar <alex@rutar.org>"]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/alexrutar/ncp-engine"
@@ -12,14 +12,14 @@ readme = "README.md"
 
 [dependencies]
 ncp-matcher = { version = "0.4.0", path = "matcher" }
-parking_lot = { version = "0.12.5", features = ["send_guard", "arc_lock"] }
+parking_lot = { version = "0.13.0", features = ["send_guard", "arc_lock"] }
 rayon = "1.11.0"
 
 [dev-dependencies]
 criterion = "0.8.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11.1"
 
 [[bench]]
 name = "insertion"
